@@ -1,0 +1,132 @@
+# Six AsyncAPI 3.0-governed Kafka topics that wire the agent mesh together,
+# plus one demo data topic the scenarios produce/consume against.
+# Strimzi Topic Operator reconciles these into real Kafka topics.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: ops.requests.v1
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: command
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    retention.ms: 86400000          # 1 day
+    cleanup.policy: delete
+    min.insync.replicas: 2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: ops.kafka.metrics.v1
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: telemetry
+spec:
+  partitions: 6
+  replicas: 3
+  config:
+    retention.ms: 3600000           # 1 hour — high-volume telemetry
+    cleanup.policy: delete
+    min.insync.replicas: 2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: ops.incidents.v1
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: event
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    retention.ms: 604800000         # 7 days
+    cleanup.policy: delete
+    min.insync.replicas: 2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  # Compact-only: latest lesson per scenario+action key is what informs
+  # future reasoning prompts.
+  name: ops.lessons.v1
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: state
+spec:
+  partitions: 1
+  replicas: 3
+  config:
+    cleanup.policy: compact
+    min.cleanable.dirty.ratio: "0.1"
+    segment.ms: 60000
+    delete.retention.ms: 600000
+    min.insync.replicas: 2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  # First-class audit: every agent decision, tool call, approval and replay
+  # event lands here. Kept for one year for compliance.
+  name: ops.actions.audit.v1
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: audit
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    retention.ms: 31536000000       # 1 year
+    cleanup.policy: delete
+    min.insync.replicas: 2
+    compression.type: zstd
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: ops.notifications.v1
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: event
+spec:
+  partitions: 3
+  replicas: 3
+  config:
+    retention.ms: 2592000000        # 30 days
+    cleanup.policy: delete
+    min.insync.replicas: 2
+---
+# Synthetic data-plane topic the demo workloads (fast-producer, slow-consumer,
+# cooperative-consumer, share-group-consumer) read and write to. It is the
+# topic whose lag spikes during the "consumer lag spike" scenario.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: demo.payments.events
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    asyncapi.role: data-plane
+spec:
+  partitions: 12
+  replicas: 3
+  config:
+    retention.ms: 3600000           # 1 hour
+    cleanup.policy: delete
+    min.insync.replicas: 2

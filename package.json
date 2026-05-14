@@ -1,0 +1,35 @@
+{
+  "name": "agent-mesh-sre",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Mesh on Streaming World — Self-Healing, MCP-Governed AI Workflows for Apache Kafka. API Days demo.",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "@xyflow/react": "^12.3.5",
+    "clsx": "^2.1.1",
+    "framer-motion": "^11.11.17",
+    "kafkajs": "^2.2.4",
+    "lucide-react": "^0.468.0",
+    "next": "14.2.18",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.5",
+    "yaml": "^2.7.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0-beta.4",
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^4.0.0-beta.4",
+    "typescript": "^5.7.2"
+  }
+}

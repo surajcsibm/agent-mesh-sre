@@ -1,0 +1,110 @@
+# Strimzi 0.51.0 — Kafka 4.2.0 (KRaft, KIP-848 cooperative consumer rebalancing,
+# KIP-932 share groups) with three listeners:
+#   * tls (9093)  — internal mTLS-encrypted, SCRAM-SHA-512 auth (the demo path)
+#   * plain (9092) — internal plaintext for in-cluster utilities
+#   * external (9094) — type=route on OpenShift; the demo app on the laptop
+#                       connects through here using the SCRAM credentials of
+#                       the `agent-mesh-controller` KafkaUser.
+#
+# Authorization: simple ACLs, denyIfNoMatchingAcl is left at default (false)
+# so we can iterate on ACLs without breaking everything. In production you
+# would flip this on.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: agent-mesh-kafka
+  namespace: agent-mesh-sre
+  labels:
+    app.kubernetes.io/part-of: agent-mesh-sre
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    version: 4.2.0
+    metadataVersion: 4.2-IV1
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: scram-sha-512
+      - name: external
+        port: 9094
+        type: route
+        tls: true
+        authentication:
+          type: scram-sha-512
+        configuration:
+          bootstrap:
+            host: agent-mesh-bootstrap
+    authorization:
+      type: simple
+      superUsers:
+        - CN=agent-mesh-superuser
+    config:
+      # Production-grade defaults for a 3-broker cluster.
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      auto.create.topics.enable: false
+      # KIP-848 — cooperative protocol must be available so the Monitor agent
+      # can reason about `preparing-rebalance` vs `stable`.
+      group.coordinator.rebalance.protocols: "classic,consumer"
+      # KIP-932 — share groups (Kafka 4.x feature). Enable so the
+      # share-group-rebalance scenario is real, not just labelled as such.
+      group.share.enable: "true"
+      # Fast settlement times for demo visibility.
+      group.initial.rebalance.delay.ms: 500
+      log.retention.hours: 24
+    resources:
+      requests:
+        memory: 1Gi
+        cpu: "500m"
+      limits:
+        memory: 2Gi
+        cpu: "1"
+  entityOperator:
+    topicOperator:
+      reconciliationIntervalSeconds: 30
+      resources:
+        requests:
+          memory: 256Mi
+          cpu: "100m"
+        limits:
+          memory: 512Mi
+          cpu: "500m"
+    userOperator:
+      reconciliationIntervalSeconds: 30
+      resources:
+        requests:
+          memory: 256Mi
+          cpu: "100m"
+        limits:
+          memory: 512Mi
+          cpu: "500m"
+  cruiseControl:
+    # Cruise Control gives the Monitor agent extra signal sources for the
+    # KIP-848 / partition-imbalance scenarios. Optional; comment this block
+    # out if your cluster is tight on resources.
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: "250m"
+      limits:
+        memory: 1Gi
+        cpu: "1"
+    config:
+      hard.goals: >-
+        com.linkedin.kafka.cruisecontrol.analyzer.goals.RackAwareGoal,
+        com.linkedin.kafka.cruisecontrol.analyzer.goals.MinTopicLeadersPerBrokerGoal,
+        com.linkedin.kafka.cruisecontrol.analyzer.goals.ReplicaCapacityGoal,
+        com.linkedin.kafka.cruisecontrol.analyzer.goals.DiskCapacityGoal

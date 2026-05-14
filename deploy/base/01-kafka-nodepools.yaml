@@ -1,0 +1,68 @@
+# Strimzi 0.51.0 — Kafka 4.2.0 in KRaft mode, split controller / broker pools.
+# Both pools are JBOD persistent so KRaft metadata + topic data survive pod
+# restarts. The split is what makes the "controller failover" scenario real:
+# we delete a pod from the `controller` pool while brokers keep serving.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: controller
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    app.kubernetes.io/component: kafka-controller
+spec:
+  replicas: 3
+  roles:
+    - controller
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 10Gi
+        deleteClaim: true
+        kraftMetadata: shared
+  resources:
+    requests:
+      memory: 1Gi
+      cpu: "250m"
+    limits:
+      memory: 2Gi
+      cpu: "1"
+  jvmOptions:
+    -Xms: 512m
+    -Xmx: 1g
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: broker
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    app.kubernetes.io/component: kafka-broker
+spec:
+  replicas: 3
+  roles:
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 20Gi
+        deleteClaim: true
+        kraftMetadata: shared
+  resources:
+    requests:
+      memory: 1Gi
+      cpu: "500m"
+    limits:
+      memory: 2Gi
+      cpu: "1"
+  jvmOptions:
+    -Xms: 768m
+    -Xmx: 1536m

@@ -1,0 +1,199 @@
+# One KafkaUser per agent identity (least-privilege ACLs) plus a privileged
+# "controller" user the laptop demo app uses to manage workloads and read
+# admin metrics. Strimzi User Operator generates a secret of the same name
+# containing the SCRAM-SHA-512 password.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  # The local Next.js app authenticates as this user. Has full access so the
+  # demo can manage topics, run admin describes, and produce/consume on any
+  # topic. In production you'd split this into separate identities.
+  name: agent-mesh-controller
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: "*"
+          patternType: literal
+        operations: [Read, Write, Create, Describe, Alter, AlterConfigs, DescribeConfigs, Delete]
+        host: "*"
+      - resource:
+          type: group
+          name: "*"
+          patternType: literal
+        operations: [Read, Describe, Delete]
+        host: "*"
+      - resource:
+          type: cluster
+          name: kafka-cluster
+          patternType: literal
+        operations: [Describe, Alter, AlterConfigs, ClusterAction, DescribeConfigs]
+        host: "*"
+      # KIP-932 share-group operations
+      - resource:
+          type: transactionalId
+          name: "*"
+          patternType: literal
+        operations: [Describe, Write]
+        host: "*"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: intake-agent
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    agent.role: intake
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Intake produces operator requests
+      - resource: { type: topic, name: ops.requests.v1, patternType: literal }
+        operations: [Describe, Write, Create]
+        host: "*"
+      - resource: { type: topic, name: ops.actions.audit.v1, patternType: literal }
+        operations: [Describe, Write]
+        host: "*"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: monitor-agent
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    agent.role: monitor
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Monitor consumes requests + telemetry, produces incidents + audit + lessons
+      - resource: { type: topic, name: ops.requests.v1, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"
+      - resource: { type: topic, name: ops.kafka.metrics.v1, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"
+      - resource: { type: topic, name: ops.lessons.v1, patternType: literal }
+        operations: [Describe, Read, Write]
+        host: "*"
+      - resource: { type: topic, name: ops.incidents.v1, patternType: literal }
+        operations: [Describe, Write]
+        host: "*"
+      - resource: { type: topic, name: ops.actions.audit.v1, patternType: literal }
+        operations: [Describe, Write]
+        host: "*"
+      - resource: { type: group, name: monitor-agent-, patternType: prefix }
+        operations: [Describe, Read]
+        host: "*"
+      # Monitor reads consumer lag for the demo workloads
+      - resource: { type: cluster, name: kafka-cluster, patternType: literal }
+        operations: [Describe, DescribeConfigs]
+        host: "*"
+      - resource: { type: group, name: payments-consumer, patternType: literal }
+        operations: [Describe]
+        host: "*"
+      - resource: { type: group, name: claims-share-group, patternType: literal }
+        operations: [Describe]
+        host: "*"
+      - resource: { type: group, name: cooperative-consumer, patternType: literal }
+        operations: [Describe]
+        host: "*"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: writer-agent
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    agent.role: writer
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Writer drains incidents, produces audit
+      - resource: { type: topic, name: ops.incidents.v1, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"
+      - resource: { type: topic, name: ops.actions.audit.v1, patternType: literal }
+        operations: [Describe, Write]
+        host: "*"
+      - resource: { type: group, name: writer-agent-, patternType: prefix }
+        operations: [Describe, Read]
+        host: "*"
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: notification-agent
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+    agent.role: notification
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Notification reads audit, produces outbound notifications
+      - resource: { type: topic, name: ops.actions.audit.v1, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"
+      - resource: { type: topic, name: ops.notifications.v1, patternType: literal }
+        operations: [Describe, Write]
+        host: "*"
+      - resource: { type: group, name: notification-agent-, patternType: prefix }
+        operations: [Describe, Read]
+        host: "*"
+---
+# Demo workload identities — used by the producer/consumer pods that the
+# scenario buttons manipulate. Single shared identity for simplicity.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: demo-workload
+  namespace: agent-mesh-sre
+  labels:
+    strimzi.io/cluster: agent-mesh-kafka
+    app.kubernetes.io/part-of: agent-mesh-sre
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource: { type: topic, name: demo., patternType: prefix }
+        operations: [Describe, Read, Write, Create]
+        host: "*"
+      - resource: { type: group, name: payments-consumer, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"
+      - resource: { type: group, name: cooperative-consumer, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"
+      - resource: { type: group, name: claims-share-group, patternType: literal }
+        operations: [Describe, Read]
+        host: "*"

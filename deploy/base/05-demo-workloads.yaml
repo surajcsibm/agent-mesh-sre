@@ -1,0 +1,371 @@
+# Demo data-plane workloads. These are the Pods the scenario buttons
+# (and the shell scripts in deploy/scenarios/) manipulate. They reuse the
+# Strimzi Kafka image so we don't pull a second image onto the cluster.
+#
+# The lag-spike scenario works like this:
+#   * fast-producer publishes ~150 msg/sec to demo.payments.events
+#   * slow-consumer reads at ~150 msg/sec on its own (no lag)
+#   * Clicking "Consumer lag spike" sets the consumer DELAY_MS to 200ms,
+#     which drops effective throughput to ~5 msg/sec → lag accumulates fast
+#   * Monitor agent reads real lag via Admin.fetchOffsets, reasons over it,
+#     proposes scale, and on approval the app resets DELAY_MS back to 0
+#   * Lag drains, lesson is published
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-scripts
+  namespace: agent-mesh-sre
+  labels:
+    app.kubernetes.io/part-of: agent-mesh-sre
+data:
+  client.properties: |
+    security.protocol=SASL_SSL
+    sasl.mechanism=SCRAM-SHA-512
+    ssl.truststore.location=/opt/kafka/ca/cluster.truststore.jks
+    ssl.truststore.password=changeit
+    sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="${KAFKA_USERNAME}" password="${KAFKA_PASSWORD}";
+  fast-producer.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /opt/kafka
+    keytool -import -trustcacerts -alias root \
+      -file /opt/kafka/ca-bundle/ca.crt \
+      -keystore /opt/kafka/ca/cluster.truststore.jks \
+      -storepass changeit -noprompt 2>/dev/null || true
+    envsubst < /opt/scripts/client.properties > /tmp/client.properties
+    echo "[fast-producer] starting; bootstrap=$KAFKA_BOOTSTRAP topic=$TOPIC"
+    while true; do
+      bin/kafka-producer-perf-test.sh \
+        --topic "$TOPIC" \
+        --num-records "${BATCH_RECORDS:-1500}" \
+        --record-size "${RECORD_BYTES:-256}" \
+        --throughput "${THROUGHPUT:-150}" \
+        --producer.config /tmp/client.properties \
+        --producer-props bootstrap.servers="$KAFKA_BOOTSTRAP" || true
+      sleep 1
+    done
+  slow-consumer.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /opt/kafka
+    keytool -import -trustcacerts -alias root \
+      -file /opt/kafka/ca-bundle/ca.crt \
+      -keystore /opt/kafka/ca/cluster.truststore.jks \
+      -storepass changeit -noprompt 2>/dev/null || true
+    envsubst < /opt/scripts/client.properties > /tmp/client.properties
+    DELAY_MS="${DELAY_MS:-0}"
+    echo "[slow-consumer] starting; group=$GROUP delayMs=$DELAY_MS"
+    bin/kafka-console-consumer.sh \
+      --bootstrap-server "$KAFKA_BOOTSTRAP" \
+      --topic "$TOPIC" \
+      --group "$GROUP" \
+      --consumer.config /tmp/client.properties \
+      --consumer-property "client.id=slow-consumer-${HOSTNAME}" \
+      --consumer-property "max.poll.records=50" \
+      --property print.value=false \
+    | while IFS= read -r _; do
+        # tunable artificial slowness — `oc set env` can change this live
+        if [ "$DELAY_MS" -gt 0 ]; then
+          python3 -c "import time;time.sleep($DELAY_MS/1000.0)" 2>/dev/null \
+            || sleep 0.$(printf "%03d" "$DELAY_MS")
+        fi
+      done
+  cooperative-consumer.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /opt/kafka
+    keytool -import -trustcacerts -alias root \
+      -file /opt/kafka/ca-bundle/ca.crt \
+      -keystore /opt/kafka/ca/cluster.truststore.jks \
+      -storepass changeit -noprompt 2>/dev/null || true
+    envsubst < /opt/scripts/client.properties > /tmp/client.properties
+    cat >> /tmp/client.properties <<EOF
+    group.protocol=consumer
+    EOF
+    echo "[cooperative-consumer] starting; group=$GROUP (KIP-848 protocol=consumer)"
+    bin/kafka-console-consumer.sh \
+      --bootstrap-server "$KAFKA_BOOTSTRAP" \
+      --topic "$TOPIC" \
+      --group "$GROUP" \
+      --consumer.config /tmp/client.properties \
+      --property print.value=false \
+    >/dev/null
+  share-group-consumer.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /opt/kafka
+    keytool -import -trustcacerts -alias root \
+      -file /opt/kafka/ca-bundle/ca.crt \
+      -keystore /opt/kafka/ca/cluster.truststore.jks \
+      -storepass changeit -noprompt 2>/dev/null || true
+    envsubst < /opt/scripts/client.properties > /tmp/client.properties
+    echo "[share-group-consumer] starting; share-group=$GROUP (KIP-932)"
+    # kafka-console-share-consumer.sh is the KIP-932 shipping tool in 4.x
+    if [ -x bin/kafka-console-share-consumer.sh ]; then
+      bin/kafka-console-share-consumer.sh \
+        --bootstrap-server "$KAFKA_BOOTSTRAP" \
+        --topic "$TOPIC" \
+        --group "$GROUP" \
+        --consumer.config /tmp/client.properties \
+        --property print.value=false \
+      >/dev/null
+    else
+      echo "share-consumer tool unavailable in this image — falling back to consumer"
+      bin/kafka-console-consumer.sh \
+        --bootstrap-server "$KAFKA_BOOTSTRAP" \
+        --topic "$TOPIC" \
+        --group "$GROUP" \
+        --consumer.config /tmp/client.properties \
+        --property print.value=false \
+      >/dev/null
+    fi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fast-producer
+  namespace: agent-mesh-sre
+  labels:
+    app.kubernetes.io/part-of: agent-mesh-sre
+    app.kubernetes.io/component: producer
+    workload: fast-producer
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { workload: fast-producer }
+  template:
+    metadata:
+      labels:
+        workload: fast-producer
+        app.kubernetes.io/part-of: agent-mesh-sre
+    spec:
+      containers:
+        - name: producer
+          image: quay.io/strimzi/kafka:0.51.0-kafka-4.2.0
+          command: ["/bin/bash", "/opt/scripts/fast-producer.sh"]
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "agent-mesh-kafka-kafka-bootstrap.agent-mesh-sre.svc:9093"
+            - name: TOPIC
+              value: "demo.payments.events"
+            - name: THROUGHPUT
+              value: "150"
+            - name: BATCH_RECORDS
+              value: "1500"
+            - name: KAFKA_USERNAME
+              value: "demo-workload"
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-workload
+                  key: password
+          volumeMounts:
+            - name: scripts
+              mountPath: /opt/scripts
+            - name: ca-bundle
+              mountPath: /opt/kafka/ca-bundle
+            - name: ca-truststore
+              mountPath: /opt/kafka/ca
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: workload-scripts
+            defaultMode: 0755
+        - name: ca-bundle
+          secret:
+            secretName: agent-mesh-kafka-cluster-ca-cert
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: ca-truststore
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slow-consumer
+  namespace: agent-mesh-sre
+  labels:
+    app.kubernetes.io/part-of: agent-mesh-sre
+    app.kubernetes.io/component: consumer
+    workload: slow-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { workload: slow-consumer }
+  template:
+    metadata:
+      labels:
+        workload: slow-consumer
+        app.kubernetes.io/part-of: agent-mesh-sre
+    spec:
+      containers:
+        - name: consumer
+          image: quay.io/strimzi/kafka:0.51.0-kafka-4.2.0
+          command: ["/bin/bash", "/opt/scripts/slow-consumer.sh"]
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "agent-mesh-kafka-kafka-bootstrap.agent-mesh-sre.svc:9093"
+            - name: TOPIC
+              value: "demo.payments.events"
+            - name: GROUP
+              value: "payments-consumer"
+            - name: DELAY_MS
+              value: "0"
+            - name: KAFKA_USERNAME
+              value: "demo-workload"
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-workload
+                  key: password
+          volumeMounts:
+            - name: scripts
+              mountPath: /opt/scripts
+            - name: ca-bundle
+              mountPath: /opt/kafka/ca-bundle
+            - name: ca-truststore
+              mountPath: /opt/kafka/ca
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: workload-scripts
+            defaultMode: 0755
+        - name: ca-bundle
+          secret:
+            secretName: agent-mesh-kafka-cluster-ca-cert
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: ca-truststore
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cooperative-consumer
+  namespace: agent-mesh-sre
+  labels:
+    app.kubernetes.io/part-of: agent-mesh-sre
+    app.kubernetes.io/component: consumer
+    workload: cooperative-consumer
+spec:
+  # Two replicas in the cooperative group. Scaling +1 triggers a real
+  # KIP-848 cooperative rebalance — the "benign rebalance" scenario.
+  replicas: 2
+  selector:
+    matchLabels: { workload: cooperative-consumer }
+  template:
+    metadata:
+      labels:
+        workload: cooperative-consumer
+        app.kubernetes.io/part-of: agent-mesh-sre
+    spec:
+      containers:
+        - name: consumer
+          image: quay.io/strimzi/kafka:0.51.0-kafka-4.2.0
+          command: ["/bin/bash", "/opt/scripts/cooperative-consumer.sh"]
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "agent-mesh-kafka-kafka-bootstrap.agent-mesh-sre.svc:9093"
+            - name: TOPIC
+              value: "demo.payments.events"
+            - name: GROUP
+              value: "cooperative-consumer"
+            - name: KAFKA_USERNAME
+              value: "demo-workload"
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: demo-workload, key: password }
+          volumeMounts:
+            - { name: scripts, mountPath: /opt/scripts }
+            - { name: ca-bundle, mountPath: /opt/kafka/ca-bundle }
+            - { name: ca-truststore, mountPath: /opt/kafka/ca }
+          resources:
+            requests: { cpu: "50m", memory: "256Mi" }
+            limits:   { cpu: "300m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+      volumes:
+        - name: scripts
+          configMap: { name: workload-scripts, defaultMode: 0755 }
+        - name: ca-bundle
+          secret:
+            secretName: agent-mesh-kafka-cluster-ca-cert
+            items: [{ key: ca.crt, path: ca.crt }]
+        - name: ca-truststore
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: share-group-consumer
+  namespace: agent-mesh-sre
+  labels:
+    app.kubernetes.io/part-of: agent-mesh-sre
+    app.kubernetes.io/component: consumer
+    workload: share-group-consumer
+spec:
+  # KIP-932 share group. Scaling +1 triggers a share-group rebalance.
+  replicas: 1
+  selector:
+    matchLabels: { workload: share-group-consumer }
+  template:
+    metadata:
+      labels:
+        workload: share-group-consumer
+        app.kubernetes.io/part-of: agent-mesh-sre
+    spec:
+      containers:
+        - name: consumer
+          image: quay.io/strimzi/kafka:0.51.0-kafka-4.2.0
+          command: ["/bin/bash", "/opt/scripts/share-group-consumer.sh"]
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "agent-mesh-kafka-kafka-bootstrap.agent-mesh-sre.svc:9093"
+            - name: TOPIC
+              value: "demo.payments.events"
+            - name: GROUP
+              value: "claims-share-group"
+            - name: KAFKA_USERNAME
+              value: "demo-workload"
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: demo-workload, key: password }
+          volumeMounts:
+            - { name: scripts, mountPath: /opt/scripts }
+            - { name: ca-bundle, mountPath: /opt/kafka/ca-bundle }
+            - { name: ca-truststore, mountPath: /opt/kafka/ca }
+          resources:
+            requests: { cpu: "50m", memory: "256Mi" }
+            limits:   { cpu: "300m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            runAsNonRoot: true
+      volumes:
+        - name: scripts
+          configMap: { name: workload-scripts, defaultMode: 0755 }
+        - name: ca-bundle
+          secret:
+            secretName: agent-mesh-kafka-cluster-ca-cert
+            items: [{ key: ca.crt, path: ca.crt }]
+        - name: ca-truststore
+          emptyDir: {}
