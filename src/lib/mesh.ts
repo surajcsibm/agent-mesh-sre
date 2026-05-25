@@ -684,3 +684,15 @@ export function getSnapshot() {
     incidentQueueDepth: s.incidentQueue.length, scenarioRunning: s.scenarioRunning,
   };
 }
+
+/** Convenience accessor — returns an object with all mesh actions bundled. */
+export function getMesh() {
+  return {
+    killAgent,
+    restartAgent,
+    resetMesh,
+    triggerScenario,
+    resolveApproval,
+    getSnapshot,
+  };
+}

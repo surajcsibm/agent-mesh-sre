@@ -41,3 +41,8 @@ if (!globalThis.__agentEventBus) {
 }
 
 export const eventBus: EventBus = globalThis.__agentEventBus;
+
+/** Function accessor — used by kafka/tap.ts and other server modules. */
+export function getEventBus(): EventBus {
+  return globalThis.__agentEventBus!;
+}
