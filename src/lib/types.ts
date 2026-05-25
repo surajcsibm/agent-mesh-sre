@@ -170,6 +170,9 @@ export type BusEvent =
   | { type: "notification"; record: NotificationRecord }
   | { type: "lesson"; record: LessonRecord };
 
+/** Alias kept for backward compatibility with files that import WireEvent. */
+export type WireEvent = BusEvent;
+
 // ── Email summary payload ─────────────────────────────────────────────────────
 
 export interface AgentSummaryPayload {
