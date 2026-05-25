@@ -531,19 +531,86 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
       <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 px-1">
         Audit Log <span className="text-slate-300 font-normal normal-case">({log.length})</span>
       </div>
-      <div className="flex-1 overflow-y-auto space-y-1 pr-0.5">
+      <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5">
         {[...log].reverse().map((r) => (
-          <div key={r.id} className="flex gap-2 items-start text-[10px] leading-snug py-0.5">
-            <span className="shrink-0 font-bold uppercase w-14 text-right"
-              style={{ color: AUDIT_COLOR[r.type] ?? "#94a3b8" }}>
-              {r.type.slice(0, 7)}
-            </span>
-            <span className="text-slate-600 truncate">[{r.agent}] {r.summary}</span>
+          <div key={r.id}
+            className="rounded-lg bg-slate-50 border border-slate-100 px-2.5 py-2">
+            {/* Type badge + agent */}
+            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+              <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+                style={{
+                  background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "18",
+                  color:       AUDIT_COLOR[r.type] ?? "#94a3b8",
+                  border:     `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}30`,
+                }}>
+                {r.type}
+              </span>
+              <span className="text-[9px] font-semibold text-slate-400 shrink-0">[{r.agent}]</span>
+            </div>
+            {/* Full summary — wraps, no truncation */}
+            <div className="text-[10px] text-slate-600 leading-snug break-words whitespace-normal">
+              {r.summary}
+            </div>
           </div>
         ))}
         {log.length === 0 && (
           <p className="text-[11px] text-slate-400 italic px-1 pt-2">No events yet — trigger a scenario.</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Live events feed — canvas overlay ────────────────────────────────────────
+// Terminal-style dark overlay in the bottom-left of the canvas showing the
+// last 6 audit records in real-time as agents become active.
+
+function LiveEventsFeed({ log, running }: { log: AuditRecord[]; running: boolean }) {
+  const recent = [...log].reverse().slice(0, 6);
+  if (recent.length === 0) return null;
+
+  return (
+    <div className="absolute bottom-4 left-4 z-10 w-80 pointer-events-none select-none">
+      <div className="rounded-xl overflow-hidden shadow-2xl"
+        style={{ background: "rgba(15,23,42,0.88)", border: "1px solid rgba(148,163,184,0.18)", backdropFilter: "blur(6px)" }}>
+
+        {/* Header bar */}
+        <div className="flex items-center gap-2 px-3 py-2"
+          style={{ borderBottom: "1px solid rgba(148,163,184,0.12)" }}>
+          <span className={clsx("w-1.5 h-1.5 rounded-full shrink-0", running ? "animate-pulse" : "")}
+            style={{ background: running ? "#4ade80" : "#475569" }} />
+          <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: "#94a3b8" }}>
+            Live Feed
+          </span>
+          <span className="ml-auto text-[9px]" style={{ color: "#475569" }}>{log.length} events</span>
+        </div>
+
+        {/* Event rows — fading opacity on older entries */}
+        <div className="px-3 py-2.5 space-y-2">
+          {recent.map((r, i) => {
+            const opacity = Math.max(0.35, 1 - i * 0.13);
+            const agentColor = AGENT_COLOR[r.agent] ?? "#60a5fa";
+            const typeColor  = AUDIT_COLOR[r.type]  ?? "#94a3b8";
+            return (
+              <div key={r.id} style={{ opacity }} className="flex gap-2 items-start">
+                {/* Type badge */}
+                <span className="shrink-0 text-[8px] font-bold uppercase tracking-wide mt-0.5"
+                  style={{ color: typeColor, minWidth: 52, textAlign: "right" }}>
+                  {r.type.slice(0, 10)}
+                </span>
+                {/* Agent + message */}
+                <div className="min-w-0 flex-1">
+                  <span className="text-[9px] font-bold mr-1" style={{ color: agentColor }}>
+                    [{r.agent}]
+                  </span>
+                  <span className="text-[9px] break-words whitespace-normal leading-snug" style={{ color: "#cbd5e1" }}>
+                    {r.summary}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -690,7 +757,7 @@ export default function Dashboard() {
 
         {/* Canvas */}
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
-          <div className="flex-1 p-4 min-h-0">
+          <div className="flex-1 p-4 min-h-0 relative">
             <AgentCanvas
               agents={state.agents}
               broker={state.broker}
@@ -698,6 +765,7 @@ export default function Dashboard() {
               onKill={(id) => agentAction(id, "kill")}
               onRestart={(id) => agentAction(id, "restart")}
             />
+            <LiveEventsFeed log={state.auditLog} running={state.scenarioRunning} />
           </div>
 
           {/* Notifications strip — light green */}
