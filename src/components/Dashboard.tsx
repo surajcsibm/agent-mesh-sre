@@ -1590,34 +1590,40 @@ export default function Dashboard() {
     } catch { /* quota exceeded — ignore */ }
   }, [summaryHistory, historyMounted]);
 
+  // Keep a ref to the latest auditLog so the capture effect can read it
+  // without needing auditLog in its dependency array (which would cause
+  // repeated re-runs and make every scenario appear only once).
+  const auditLogRef = useRef(state.auditLog);
+  auditLogRef.current = state.auditLog;
+
+  // Track which emailSummary object we last added so we don't double-add it.
+  const lastAddedSummaryRef = useRef<EmailSummaryData | null>(null);
+
   // Capture completed scenario to history ───────────────────────────────────
-  // Also hydrate liveEvents from the current auditLog if the scenario didn't
-  // explicitly collect them (most scenarios other than lag-spike).
   useEffect(() => {
     if (!state.emailSummary) return;
-    setSummaryHistory(prev => {
-      const raw = state.emailSummary!;
-      // Hydrate liveEvents from auditLog when the scenario didn't populate them
-      const hydrated: EmailSummaryData =
-        raw.liveEvents && raw.liveEvents.length > 0
-          ? raw
-          : {
-              ...raw,
-              liveEvents: state.auditLog.slice(-40).map(r => ({
-                type:    r.type,
-                agent:   r.agent,
-                summary: r.summary,
-                ts:      r.ts,
-              })),
-            };
-      if (
-        prev.length > 0 &&
-        prev[0].scenarioLabel === hydrated.scenarioLabel &&
-        prev[0].action        === hydrated.action
-      ) return prev;
-      return [hydrated, ...prev].slice(0, 20);
-    });
-  }, [state.emailSummary, state.auditLog]);
+    // Same object reference = already captured (effect re-ran for another reason)
+    if (state.emailSummary === lastAddedSummaryRef.current) return;
+    lastAddedSummaryRef.current = state.emailSummary;
+
+    const raw = state.emailSummary;
+    // Hydrate liveEvents from auditLog when the scenario didn't populate them
+    const hydrated: EmailSummaryData =
+      raw.liveEvents && raw.liveEvents.length > 0
+        ? raw
+        : {
+            ...raw,
+            liveEvents: auditLogRef.current.slice(-40).map(r => ({
+              type:    r.type,
+              agent:   r.agent,
+              summary: r.summary,
+              ts:      r.ts,
+            })),
+          };
+
+    // Prepend — no dedup so every run (even same scenario) gets its own entry
+    setSummaryHistory(prev => [hydrated, ...prev].slice(0, 30));
+  }, [state.emailSummary]);
 
   const handleTopicSave = (updated: KafkaTopic) => {
     const prev = topics.find((t) => t.id === updated.id)!;
@@ -1936,31 +1942,7 @@ export default function Dashboard() {
 
           </div>
 
-          {/* 2 ── Notification bar ─────────────────────────────────────────── */}
-          {state.notifications.length > 0 && (
-            <div className="shrink-0 px-5 py-2"
-                 style={{
-                   borderTop: "1px solid rgba(29,158,117,0.22)",
-                   background: "linear-gradient(90deg, rgba(29,158,117,0.10) 0%, rgba(29,158,117,0.03) 100%)",
-                 }}>
-              <div className="flex items-center gap-2 overflow-x-auto">
-                <span className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: "#1D9E75" }} />
-                {[...state.notifications].reverse().slice(0, 1).map((n) => (
-                  <button
-                    key={n.id}
-                    onClick={showLastSummary}
-                    className="flex-1 text-left font-semibold truncate"
-                    style={{ fontSize: 13, color: "#0F6E56", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                  >
-                    {n.message}
-                    {state.lastEmailSummary && (
-                      <span className="ml-2 font-normal" style={{ fontSize: 11, color: "#94a3b8" }}>— click to review</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Notification bar removed — scenario results go straight to history list */}
 
           {/* 3 ── Live feed (while running) or Scenario history ──────────── */}
           <div className="flex-1 overflow-hidden min-h-0 flex flex-col" style={{ background: "#f8fafc", borderTop: "1px solid #dce5ef" }}>
