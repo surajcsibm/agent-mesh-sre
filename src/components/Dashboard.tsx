@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useMeshStream } from "./useMeshStream";
 import type { ApprovalRequest, AuditRecord, MCPToolCall, AgentState } from "@/lib/types";
-import type { EmailSummaryData, TopicChangePayload } from "./useMeshStream";
+import type { EmailSummaryData, TopicChangePayload, TopicHealPayload } from "./useMeshStream";
 import clsx from "clsx";
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useRef } from "react";
@@ -68,14 +68,24 @@ const MRAL_DOT: Record<string, string> = {
   awaiting: "#d97706", act: "#ea580c", learn: "#16a34a", replaying: "#0891b2",
 };
 
+// ── Arctic Clean theme tokens ─────────────────────────────────────────────────
+// Page bg:    #f0f4f8  (light blue-gray)
+// Surface:    #ffffff  (white cards)
+// Sidebar bg: #f8fafc
+// Nav:        #1e3a5f  (deep navy)
+// Border:     #dce5ef
+// Accent:     #1D9E75  (emerald)
+// Text-1:     #1e3a5f  (navy)
+// Text-2:     #64748b  (slate-500)
+
 // ── Toast stack ───────────────────────────────────────────────────────────────
 
 function ToastStack({ toasts }: { toasts: { id: number; message: string; kind: string }[] }) {
   const styles: Record<string, { bg: string; border: string; text: string; dot: string }> = {
-    info:    { bg: "bg-blue-50",   border: "border-blue-200",  text: "text-blue-800",  dot: "bg-blue-500"  },
-    success: { bg: "bg-green-50",  border: "border-green-200", text: "text-green-800", dot: "bg-green-500" },
-    warning: { bg: "bg-amber-50",  border: "border-amber-200", text: "text-amber-800", dot: "bg-amber-500" },
-    error:   { bg: "bg-red-50",    border: "border-red-200",   text: "text-red-700",   dot: "bg-red-500"   },
+    info:    { bg: "bg-sky-50",      border: "border-sky-200",    text: "text-sky-800",    dot: "bg-sky-500"    },
+    success: { bg: "bg-emerald-50",  border: "border-emerald-200",text: "text-emerald-800",dot: "bg-emerald-500"},
+    warning: { bg: "bg-amber-50",    border: "border-amber-200",  text: "text-amber-800",  dot: "bg-amber-500"  },
+    error:   { bg: "bg-red-50",      border: "border-red-200",    text: "text-red-700",    dot: "bg-red-500"    },
   };
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 max-w-sm pointer-events-none">
@@ -143,7 +153,7 @@ function LiveActivityBanner({ agents }: { agents: AgentState[] }) {
         {detail && (
           <>
             <span className="text-slate-300 shrink-0">·</span>
-            <span className="text-xs text-slate-500 truncate flex-1">{detail}</span>
+            <span className="text-xs text-[#64748b] truncate flex-1">{detail}</span>
           </>
         )}
         {active.status === "awaiting-approval" && (
@@ -466,6 +476,39 @@ function ScenarioEndModal({ data, onClose }: { data: EmailSummaryData; onClose: 
             )}
           </div>
 
+          {/* ── Live Events Timeline ── */}
+          {data.liveEvents && data.liveEvents.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase",
+                            letterSpacing: "0.8px", marginBottom: 8 }}>📡 Live Events Timeline</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+                    <th style={{ textAlign: "left", padding: "7px 12px", color: "#64748b", fontWeight: 600, width: 80 }}>Event</th>
+                    <th style={{ textAlign: "left", padding: "7px 12px", color: "#64748b", fontWeight: 600, width: 90 }}>Agent</th>
+                    <th style={{ textAlign: "left", padding: "7px 12px", color: "#64748b", fontWeight: 600 }}>Summary</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.liveEvents.map((ev, i) => {
+                    const color = AUDIT_COLOR[ev.type] ?? "#94a3b8";
+                    return (
+                      <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc", borderBottom: i < data.liveEvents!.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                        <td style={{ padding: "7px 12px" }}>
+                          <span style={{ background: color + "18", color, border: `1px solid ${color}30`, borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700 }}>
+                            {ev.type}
+                          </span>
+                        </td>
+                        <td style={{ padding: "7px 12px", color: "#64748b", fontSize: 11 }}>[{ev.agent}]</td>
+                        <td style={{ padding: "7px 12px", color: "#334155", lineHeight: 1.5 }}>{ev.summary}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* ── Footer strip ── */}
           <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #e2e8f0",
                         fontSize: 11, color: "#94a3b8", lineHeight: 1.6 }}>
@@ -509,25 +552,32 @@ function UserMenu() {
   return (
     <div className="relative">
       <button onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 rounded-full border border-blue-200 bg-white pl-1.5 pr-3 py-1
-                   hover:border-blue-400 hover:bg-blue-50 transition-colors shadow-sm">
+        className="flex items-center gap-2 rounded-full pl-1.5 pr-3 py-1 transition-colors"
+        style={{ border: "1px solid rgba(255,255,255,0.25)", background: "rgba(255,255,255,0.12)" }}
+        onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.22)")}
+        onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.12)")}>
         {image
           ? <img src={image} alt={name} referrerPolicy="no-referrer" className="w-6 h-6 rounded-full" />
-          : <div className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-[9px] font-bold text-white">
+          : <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white"
+               style={{ background: "#1D9E75" }}>
               {initials}
             </div>
         }
-        <span className="text-xs text-slate-700 font-medium max-w-[100px] truncate hidden sm:block">{name}</span>
+        <span className="text-xs text-white/90 font-medium max-w-[100px] truncate hidden sm:block">{name}</span>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl border border-slate-200 bg-white shadow-xl z-50">
-          <div className="px-4 py-3 border-b border-slate-100">
-            <div className="text-xs font-semibold text-slate-800 truncate">{name}</div>
-            <div className="text-[10px] text-slate-400 truncate">{email}</div>
+        <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl bg-white shadow-xl z-50"
+             style={{ border: "1px solid #dce5ef" }}>
+          <div className="px-4 py-3" style={{ borderBottom: "1px solid #f0f4f8" }}>
+            <div className="text-xs font-semibold truncate" style={{ color: "#1e3a5f" }}>{name}</div>
+            <div className="text-[10px] truncate" style={{ color: "#94a3b8" }}>{email}</div>
           </div>
           <button onClick={() => signOut({ callbackUrl: "/login" })}
-            className="w-full text-left px-4 py-2.5 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-b-xl transition-colors">
+            className="w-full text-left px-4 py-2.5 text-xs rounded-b-xl transition-colors"
+            style={{ color: "#64748b" }}
+            onMouseEnter={e => { (e.currentTarget.style.background = "#f0f4f8"); (e.currentTarget.style.color = "#1e3a5f"); }}
+            onMouseLeave={e => { (e.currentTarget.style.background = ""); (e.currentTarget.style.color = "#64748b"); }}>
             Sign out
           </button>
         </div>
@@ -541,13 +591,13 @@ function UserMenu() {
 function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   return (
     <div className="flex flex-col h-full">
-      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 px-1">
-        Audit Log <span className="text-slate-400 font-normal normal-case">({log.length})</span>
+      <div className="text-xs font-bold text-[#1e3a5f] uppercase tracking-widest mb-2 px-1 opacity-60">
+        Audit Log <span className="text-[#94a3b8] font-normal normal-case">({log.length})</span>
       </div>
       <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
         {[...log].reverse().map((r) => (
           <div key={r.id}
-            className="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2.5">
+            className="rounded-lg bg-white border border-[#e8eef4] px-3 py-2.5">
             <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
               <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
                 style={{
@@ -557,15 +607,15 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
                 }}>
                 {r.type}
               </span>
-              <span className="text-[10px] font-semibold text-slate-400 shrink-0">[{r.agent}]</span>
+              <span className="text-[10px] font-semibold text-[#94a3b8] shrink-0">[{r.agent}]</span>
             </div>
-            <div className="text-xs text-slate-600 leading-relaxed break-words whitespace-normal">
+            <div className="text-xs text-[#475569] leading-relaxed break-words whitespace-normal">
               {r.summary}
             </div>
           </div>
         ))}
         {log.length === 0 && (
-          <p className="text-xs text-slate-400 italic px-1 pt-2">No events yet — trigger a scenario.</p>
+          <p className="text-xs text-[#94a3b8] italic px-1 pt-2">No events yet — trigger a scenario.</p>
         )}
       </div>
     </div>
@@ -604,37 +654,41 @@ function AgentLiveFeed({ log, agents, running, hidden }: {
   const desc       = active ? (PHASE_DESC[active.status] ?? active.status) : null;
 
   return (
-    <div className="absolute top-4 right-4 z-10 w-64 pointer-events-none select-none
-                    animate-[slideInRight_0.2s_ease-out]">
-      <div className="bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden">
+    <div className="absolute bottom-4 left-1/2 z-10 pointer-events-none select-none
+                    animate-[slideUp_0.25s_ease-out]"
+         style={{ transform: "translateX(-50%)", width: "min(520px, 90%)" }}>
+      <div className="bg-white rounded-xl overflow-hidden" style={{ border: "1px solid #dce5ef", boxShadow: "0 4px 20px rgba(30,58,95,0.10)" }}>
 
-        {/* Active agent header */}
-        {active && (
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-100"
-            style={{ background: agentColor + "12" }}>
-            <span className="w-2 h-2 rounded-full animate-pulse shrink-0"
-              style={{ background: agentColor }} />
-            <span className="text-[11px] font-bold" style={{ color: agentColor }}>
-              {active.name}
-            </span>
-            {desc && (
-              <span className="ml-auto text-[9px] text-slate-400 shrink-0">{desc}</span>
-            )}
-          </div>
-        )}
+        {/* Header row: active agent + live label */}
+        <div className="flex items-center gap-3 px-3 py-2 shrink-0" style={{ borderBottom: "1px solid #e8eef4", background: "#f8fafc" }}>
+          <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: "#1D9E75" }} />
+          <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "#1e3a5f" }}>
+            Agent Live Feed
+          </span>
+          {active && (
+            <>
+              <span style={{ color: "#dce5ef" }}>·</span>
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: agentColor }} />
+              <span className="text-[10px] font-bold shrink-0" style={{ color: agentColor }}>{active.name}</span>
+              {desc && <span className="text-[9px] shrink-0" style={{ color: "#94a3b8" }}>{desc}</span>}
+            </>
+          )}
+          <span className="ml-auto text-[9px]" style={{ color: "#94a3b8" }}>{keyEvents.length} events</span>
+        </div>
 
-        {/* Key event cards */}
-        <div className="p-2.5 space-y-2 max-h-72 overflow-y-auto">
+        {/* Scrollable horizontal events strip */}
+        <div className="flex items-start gap-2 px-3 py-2.5 overflow-x-auto" style={{ minHeight: "68px" }}>
           {keyEvents.length === 0 ? (
-            <p className="text-xs text-slate-400 italic px-1 py-1">Initialising…</p>
+            <p className="text-xs italic self-center" style={{ color: "#94a3b8" }}>Initialising scenario…</p>
           ) : keyEvents.map((r) => (
             <div key={r.id}
-              className="rounded-lg px-2.5 py-2 border"
+              className="shrink-0 rounded-lg px-2.5 py-2 border"
               style={{
                 background:   (AUDIT_COLOR[r.type] ?? "#94a3b8") + "09",
                 borderColor:  (AUDIT_COLOR[r.type] ?? "#94a3b8") + "28",
+                minWidth: "160px", maxWidth: "220px",
               }}>
-              <div className="flex items-center gap-1.5 mb-1.5">
+              <div className="flex items-center gap-1 mb-1">
                 <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
                   style={{
                     background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "20",
@@ -643,10 +697,10 @@ function AgentLiveFeed({ log, agents, running, hidden }: {
                   }}>
                   {r.type}
                 </span>
-                <span className="text-[9px] text-slate-500 font-medium">[{r.agent}]</span>
+                <span className="text-[9px] font-medium truncate" style={{ color: "#94a3b8" }}>[{r.agent}]</span>
               </div>
-              <div className="text-xs text-slate-600 leading-relaxed break-words whitespace-normal">
-                {r.summary}
+              <div className="text-[10px] leading-snug break-words" style={{ color: "#475569" }}>
+                {r.summary.slice(0, 72)}{r.summary.length > 72 ? "…" : ""}
               </div>
             </div>
           ))}
@@ -671,16 +725,18 @@ function LiveEventsFeed({ log, running, hidden }: {
   const recent = [...log].reverse().slice(0, 8);
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col bg-blue-50/95 backdrop-blur-[2px]
-                    border border-blue-100 rounded-lg animate-[fadeIn_0.15s_ease-out]">
+    <div className="absolute inset-0 z-10 flex flex-col backdrop-blur-[2px]
+                    rounded-lg animate-[fadeIn_0.15s_ease-out]"
+         style={{ background: "rgba(29,158,117,0.06)", border: "1px solid rgba(29,158,117,0.18)" }}>
 
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-blue-100 shrink-0">
-        <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
-        <span className="text-xs font-bold text-blue-600 uppercase tracking-widest">
+      <div className="flex items-center gap-2 px-3 py-2.5 shrink-0"
+           style={{ borderBottom: "1px solid rgba(29,158,117,0.18)" }}>
+        <span className="w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: "#1D9E75" }} />
+        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "#0F6E56" }}>
           Live Activity
         </span>
-        <span className="ml-auto text-xs text-blue-400 font-normal">
+        <span className="ml-auto text-xs font-normal" style={{ color: "#1D9E75" }}>
           {log.length} events
         </span>
       </div>
@@ -688,10 +744,11 @@ function LiveEventsFeed({ log, running, hidden }: {
       {/* Cards */}
       <div className="flex-1 overflow-y-auto space-y-2 p-3 pr-2">
         {recent.length === 0 ? (
-          <p className="text-xs text-blue-400 italic px-1 pt-2">Waiting for events…</p>
+          <p className="text-xs italic px-1 pt-2" style={{ color: "#1D9E75" }}>Waiting for events…</p>
         ) : recent.map((r) => (
           <div key={r.id}
-            className="rounded-lg bg-white border border-blue-100 px-3 py-2.5 shadow-sm">
+            className="rounded-lg bg-white px-3 py-2.5 shadow-sm"
+            style={{ border: "1px solid #dce5ef" }}>
             <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
               <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
                 style={{
@@ -701,9 +758,9 @@ function LiveEventsFeed({ log, running, hidden }: {
                 }}>
                 {r.type}
               </span>
-              <span className="text-[10px] font-semibold text-slate-500 shrink-0">[{r.agent}]</span>
+              <span className="text-[10px] font-semibold text-[#64748b] shrink-0">[{r.agent}]</span>
             </div>
-            <div className="text-xs text-slate-600 leading-relaxed break-words whitespace-normal">
+            <div className="text-xs text-[#475569] leading-relaxed break-words whitespace-normal">
               {r.summary}
             </div>
           </div>
@@ -796,37 +853,57 @@ const TOPIC_STATUS_STYLE: Record<KafkaTopic["status"], { dot: string; text: stri
 // ── Topics panel — in left sidebar ───────────────────────────────────────────
 
 function TopicsPanel({
-  topics, prevLagRef, onSelect,
+  topics, prevLagRef, onSelect, onCreateNew,
 }: {
   topics: KafkaTopic[];
   prevLagRef: React.MutableRefObject<Record<string, number>>;
   onSelect: (t: KafkaTopic) => void;
+  onCreateNew: () => void;
 }) {
+  // Sort: critical first, then degraded, then healthy. Within each group newest-first by lag desc.
+  const sorted = [...topics].sort((a, b) => {
+    const order = { critical: 0, degraded: 1, healthy: 2 };
+    const statusDiff = order[a.status] - order[b.status];
+    if (statusDiff !== 0) return statusDiff;
+    return b.lagTotal - a.lagTotal;
+  }).slice(0, 20);
+
   return (
-    <div>
-      <div className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3">
-        Kafka Topics
-        <span className="ml-1.5 text-slate-400 font-normal normal-case">({topics.length})</span>
+    <div className="flex flex-col min-h-0">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[11px] font-bold uppercase tracking-widest"
+             style={{ color: "#1e3a5f", opacity: 0.6 }}>
+          Kafka Topics
+          <span className="ml-1.5 font-normal normal-case" style={{ color: "#94a3b8" }}>({topics.length})</span>
+        </div>
+        <button onClick={onCreateNew}
+          className="text-[10px] font-bold rounded-lg px-2 py-1 transition-colors"
+          style={{ background: "#e6f5f0", color: "#0F6E56", border: "1px solid #a3d9c8" }}
+          onMouseEnter={e => { (e.currentTarget.style.background = "#1D9E75"); (e.currentTarget.style.color = "#fff"); }}
+          onMouseLeave={e => { (e.currentTarget.style.background = "#e6f5f0"); (e.currentTarget.style.color = "#0F6E56"); }}>
+          + New
+        </button>
       </div>
-      <div className="space-y-2">
-        {topics.map((t) => {
+      <div className="space-y-2 overflow-y-auto" style={{ maxHeight: "420px" }}>
+        {sorted.map((t) => {
           const st = TOPIC_STATUS_STYLE[t.status];
           const prevLag = prevLagRef.current[t.id] ?? t.lagTotal;
           const lagTrend = t.lagTotal > prevLag + 50 ? "▲" : t.lagTotal < prevLag - 50 ? "▼" : null;
           const trendColor = lagTrend === "▲" ? "text-red-500" : "text-emerald-500";
-          // Update ref for next render
           prevLagRef.current[t.id] = t.lagTotal;
 
           return (
             <button
               key={t.id}
               onClick={() => onSelect(t)}
-              className="w-full text-left rounded-xl p-3 border transition-all
-                         bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50
-                         shadow-sm group"
+              className="w-full text-left rounded-xl p-3 border transition-all shadow-sm group"
+              style={{ background: "#fff", borderColor: "#dce5ef" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1D9E75"; (e.currentTarget as HTMLElement).style.background = "#f0faf6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "#dce5ef"; (e.currentTarget as HTMLElement).style.background = "#fff"; }}
+
             >
               <div className="flex items-center justify-between gap-1.5 mb-1.5">
-                <span className="text-[11px] font-bold text-slate-700 group-hover:text-blue-800 leading-tight truncate">
+                <span className="text-[11px] font-bold leading-tight truncate" style={{ color: "#1e3a5f" }}>
                   {t.name.split(".").slice(-2).join(".")}
                 </span>
                 <span className={`flex items-center gap-1 text-[9px] font-bold shrink-0 px-1.5 py-0.5 rounded-full border ${st.bg} ${st.border} ${st.text}`}>
@@ -834,21 +911,167 @@ function TopicsPanel({
                   {t.status}
                 </span>
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-slate-500">
+              <div className="flex items-center gap-2 text-[10px]" style={{ color: "#64748b" }}>
                 <span className="font-medium">{t.partitions}p</span>
-                <span className="text-slate-300">·</span>
+                <span style={{ color: "#cbd5e1" }}>·</span>
                 <span>
-                  lag <span className={clsx("font-semibold", t.lagTotal > 5000 ? "text-red-600" : t.lagTotal > 1000 ? "text-amber-600" : "text-slate-600")}>
+                  lag <span className={clsx("font-semibold", t.lagTotal > 5000 ? "text-red-600" : t.lagTotal > 1000 ? "text-amber-600" : "text-[#1e3a5f]")}>
                     {t.lagTotal > 999 ? `${(t.lagTotal / 1000).toFixed(1)}k` : t.lagTotal}
                   </span>
                   {lagTrend && <span className={clsx("ml-0.5 text-[9px] font-bold", trendColor)}>{lagTrend}</span>}
                 </span>
-                <span className="text-slate-300">·</span>
+                <span style={{ color: "#cbd5e1" }}>·</span>
                 <span className="font-medium">{t.msgPerSec}/s</span>
               </div>
             </button>
           );
         })}
+        {topics.length > 20 && (
+          <p className="text-[9px] text-center pt-1" style={{ color: "#94a3b8" }}>
+            Showing top 20 of {topics.length} topics
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Create / Copy topic modal ─────────────────────────────────────────────────
+
+function CreateTopicModal({
+  existingTopics,
+  templateTopic,
+  onClose,
+  onCreate,
+}: {
+  existingTopics: KafkaTopic[];
+  templateTopic?: KafkaTopic;   // non-null = copy mode
+  onClose: () => void;
+  onCreate: (t: KafkaTopic) => void;
+}) {
+  const isCopy = !!templateTopic;
+  const [draft, setDraft] = useState<Omit<KafkaTopic, "id" | "status" | "consumerGroups">>({
+    name:              isCopy ? `${templateTopic!.name}.copy` : "",
+    partitions:        templateTopic?.partitions        ?? 6,
+    replicationFactor: templateTopic?.replicationFactor ?? 3,
+    retentionHours:    templateTopic?.retentionHours    ?? 72,
+    lagTotal:          0,
+    msgPerSec:         templateTopic?.msgPerSec         ?? 50,
+    description:       isCopy ? `Copy of ${templateTopic!.name}` : "",
+  });
+  const [submitted, setSubmitted] = useState(false);
+
+  const isDuplicate = existingTopics.some(t => t.name.trim() === draft.name.trim());
+  const nameEmpty   = draft.name.trim() === "";
+  const hasError    = submitted && (nameEmpty || isDuplicate);
+
+  const handleSubmit = () => {
+    setSubmitted(true);
+    if (nameEmpty || isDuplicate) return;
+    const newTopic: KafkaTopic = {
+      id: `t-${Date.now()}`,
+      name: draft.name.trim(),
+      partitions: draft.partitions,
+      replicationFactor: draft.replicationFactor,
+      retentionHours: draft.retentionHours,
+      lagTotal: 0,
+      msgPerSec: draft.msgPerSec,
+      status: "healthy",
+      consumerGroups: isCopy ? [...(templateTopic?.consumerGroups ?? [])] : [],
+      description: draft.description,
+    };
+    onCreate(newTopic);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4
+                    animate-[fadeIn_0.2s_ease-out]">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-[slideUp_0.25s_ease-out]">
+
+        {/* Header */}
+        <div className="px-6 py-4 flex items-start justify-between" style={{ background: "#1e3a5f" }}>
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "#93c5fd" }}>
+              {isCopy ? "Copy Topic" : "Create New Topic"}
+            </div>
+            <div className="text-sm font-bold text-white">
+              {isCopy ? `Copying from ${templateTopic!.name.split(".").slice(-2).join(".")}` : "New Kafka Topic"}
+            </div>
+          </div>
+          <button onClick={onClose} className="transition-colors text-lg leading-none" style={{ color: "#93c5fd" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "#fff")}
+            onMouseLeave={e => (e.currentTarget.style.color = "#93c5fd")}>×</button>
+        </div>
+
+        {/* Form */}
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wider block mb-1" style={{ color: "#64748b" }}>
+              Topic Name *
+            </label>
+            <input
+              className="w-full text-xs border rounded-lg px-3 py-2 font-mono focus:outline-none"
+              style={{
+                borderColor: hasError && (nameEmpty || isDuplicate) ? "#ef4444" : "#dce5ef",
+                boxShadow: hasError && (nameEmpty || isDuplicate) ? "0 0 0 2px rgba(239,68,68,0.12)" : "none",
+              }}
+              placeholder="e.g. payments.events.v2"
+              value={draft.name}
+              onChange={e => { setSubmitted(false); setDraft({ ...draft, name: e.target.value }); }}
+            />
+            {submitted && nameEmpty && <p className="text-[10px] text-red-500 mt-1">Topic name is required.</p>}
+            {submitted && !nameEmpty && isDuplicate && (
+              <p className="text-[10px] text-red-500 mt-1">⚠️ A topic named &quot;{draft.name.trim()}&quot; already exists.</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Partitions", key: "partitions" as const, min: 1, max: 64 },
+              { label: "Replicas",   key: "replicationFactor" as const, min: 1, max: 5 },
+              { label: "Retention (h)", key: "retentionHours" as const, min: 1, max: 8760 },
+            ].map(f => (
+              <div key={f.key}>
+                <label className="text-[10px] font-bold uppercase tracking-wider block mb-1" style={{ color: "#64748b" }}>{f.label}</label>
+                <input type="number" min={f.min} max={f.max}
+                  className="w-full text-xs border rounded-lg px-3 py-2 focus:outline-none"
+                  style={{ borderColor: "#dce5ef" }}
+                  value={draft[f.key]}
+                  onChange={e => setDraft({ ...draft, [f.key]: parseInt(e.target.value) || f.min })}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wider block mb-1" style={{ color: "#64748b" }}>Description</label>
+            <textarea rows={2}
+              className="w-full text-xs border rounded-lg px-3 py-2 focus:outline-none resize-none"
+              style={{ borderColor: "#dce5ef" }}
+              placeholder="What events does this topic carry?"
+              value={draft.description}
+              onChange={e => setDraft({ ...draft, description: e.target.value })}
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 pb-5 flex gap-3" style={{ borderTop: "1px solid #dce5ef", paddingTop: "1rem" }}>
+          <button onClick={handleSubmit}
+            className="flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors"
+            style={{ background: "#1D9E75" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "#0F6E56")}
+            onMouseLeave={e => (e.currentTarget.style.background = "#1D9E75")}>
+            {isCopy ? "✓ Create Copy" : "✓ Create Topic"}
+          </button>
+          <button onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl text-xs font-semibold transition-colors"
+            style={{ background: "#f0f4f8", color: "#64748b", border: "1px solid #dce5ef" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "#dce5ef")}
+            onMouseLeave={e => (e.currentTarget.style.background = "#f0f4f8")}>
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -857,13 +1080,15 @@ function TopicsPanel({
 // ── Topic detail / edit modal ─────────────────────────────────────────────────
 
 function TopicModal({
-  topic, scenarioRunning, onClose, onSave, onDelete,
+  topic, scenarioRunning, onClose, onSave, onDelete, onHeal, onCopy,
 }: {
   topic: KafkaTopic;
   scenarioRunning: boolean;
   onClose: () => void;
   onSave: (updated: KafkaTopic) => void;
   onDelete: (t: KafkaTopic) => void;
+  onHeal: (t: KafkaTopic) => void;
+  onCopy: (t: KafkaTopic) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<KafkaTopic>({ ...topic });
@@ -882,16 +1107,18 @@ function TopicModal({
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-[slideUp_0.25s_ease-out]">
 
         {/* Header */}
-        <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-start justify-between">
+        <div className="px-6 py-4 flex items-start justify-between" style={{ background: "#1e3a5f" }}>
           <div>
-            <div className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Kafka Topic</div>
+            <div className="text-xs font-bold uppercase tracking-widest mb-1" style={{ color: "#93c5fd" }}>Kafka Topic</div>
             <div className="text-sm font-bold text-white font-mono leading-tight">{topic.name}</div>
           </div>
           <div className="flex items-center gap-2">
             <span className={`text-[9px] font-bold px-2 py-1 rounded-full ${st.bg} ${st.text} ${st.border} border`}>
               {topic.status}
             </span>
-            <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors text-lg leading-none">×</button>
+            <button onClick={onClose} className="transition-colors text-lg leading-none" style={{ color: "#93c5fd" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "#fff")}
+              onMouseLeave={e => (e.currentTarget.style.color = "#93c5fd")}>×</button>
           </div>
         </div>
 
@@ -912,9 +1139,9 @@ function TopicModal({
                 { label: "Retention",  value: `${topic.retentionHours}h` },
                 { label: "Lag",        value: topic.lagTotal > 999 ? `${(topic.lagTotal/1000).toFixed(1)}k` : topic.lagTotal },
               ].map((s) => (
-                <div key={s.label} className="bg-slate-50 rounded-xl p-2.5 border border-slate-100 text-center">
-                  <div className="text-[10px] text-slate-400 mb-0.5">{s.label}</div>
-                  <div className="text-sm font-bold text-slate-800">{s.value}</div>
+                <div key={s.label} className="rounded-xl p-2.5 text-center border" style={{ background: "#f0f4f8", borderColor: "#dce5ef" }}>
+                  <div className="text-[10px] mb-0.5" style={{ color: "#94a3b8" }}>{s.label}</div>
+                  <div className="text-sm font-bold" style={{ color: "#1e3a5f" }}>{s.value}</div>
                 </div>
               ))}
             </div>
@@ -923,10 +1150,11 @@ function TopicModal({
           {/* Consumer groups */}
           {!editing && (
             <div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Consumer Groups</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "#94a3b8" }}>Consumer Groups</div>
               <div className="flex flex-wrap gap-1.5">
                 {topic.consumerGroups.map((g) => (
-                  <span key={g} className="text-[10px] bg-blue-50 border border-blue-200 text-blue-700 rounded-full px-2.5 py-0.5 font-medium">
+                  <span key={g} className="text-[10px] rounded-full px-2.5 py-0.5 font-medium"
+                    style={{ background: "#e6f5f0", border: "1px solid #a3d9c8", color: "#0F6E56" }}>
                     {g}
                   </span>
                 ))}
@@ -984,23 +1212,52 @@ function TopicModal({
         </div>
 
         {/* Footer actions */}
-        <div className="px-6 pb-5 flex items-center gap-2 border-t border-slate-100 pt-4">
+        <div className="px-6 pb-5 flex items-center gap-2 pt-4" style={{ borderTop: "1px solid #dce5ef" }}>
           {!editing ? (
             <>
+              {/* Heal button — only shown for degraded/critical topics */}
+              {topic.status !== "healthy" && (
+                <button
+                  disabled={scenarioRunning}
+                  onClick={() => onHeal(topic)}
+                  className="flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors disabled:opacity-40"
+                  style={{ background: topic.status === "critical" ? "#dc2626" : "#d97706" }}
+                  onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) (e.currentTarget.style.background = topic.status === "critical" ? "#b91c1c" : "#b45309"); }}
+                  onMouseLeave={e => { (e.currentTarget.style.background = topic.status === "critical" ? "#dc2626" : "#d97706"); }}
+                >
+                  {scenarioRunning ? "⏳ Running…" : topic.status === "critical" ? "🔴 Heal Now" : "⚠️ Heal Topic"}
+                </button>
+              )}
               <button
                 onClick={() => setEditing(true)}
-                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-colors"
+                className="flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors"
+                style={{ background: "#1e3a5f" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#162d4a")}
+                onMouseLeave={e => (e.currentTarget.style.background = "#1e3a5f")}
               >
-                ✏️ Edit Topic
+                ✏️ Edit
+              </button>
+              <button
+                onClick={() => onCopy(topic)}
+                className="py-2.5 px-3 rounded-xl text-xs font-bold transition-colors"
+                style={{ background: "#fff", border: "1px solid #dce5ef", color: "#64748b" }}
+                onMouseEnter={e => { (e.currentTarget.style.background = "#f0f4f8"); }}
+                onMouseLeave={e => { (e.currentTarget.style.background = "#fff"); }}
+                title="Copy topic"
+              >
+                📋
               </button>
               <button
                 onClick={() => onDelete(topic)}
-                className="flex-1 py-2.5 rounded-xl bg-white border-2 border-red-200 hover:border-red-400 hover:bg-red-50 text-red-600 text-xs font-bold transition-colors"
+                className="py-2.5 px-3 rounded-xl bg-white border-2 border-red-200 hover:border-red-400 hover:bg-red-50 text-red-600 text-xs font-bold transition-colors"
               >
-                🗑 Delete
+                🗑
               </button>
               <button onClick={onClose}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold transition-colors">
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold transition-colors"
+                style={{ background: "#f0f4f8", color: "#64748b" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#dce5ef")}
+                onMouseLeave={e => (e.currentTarget.style.background = "#f0f4f8")}>
                 Close
               </button>
             </>
@@ -1009,13 +1266,18 @@ function TopicModal({
               <button
                 disabled={!hasChanges || scenarioRunning}
                 onClick={() => { onSave(draft); setEditing(false); }}
-                className="flex-1 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40
-                           text-white text-xs font-bold transition-colors"
+                className="flex-1 py-2.5 rounded-xl disabled:opacity-40 text-white text-xs font-bold transition-colors"
+                style={{ background: "#1D9E75" }}
+                onMouseEnter={e => !((e.currentTarget as HTMLButtonElement).disabled) && (e.currentTarget.style.background = "#0F6E56")}
+                onMouseLeave={e => !((e.currentTarget as HTMLButtonElement).disabled) && (e.currentTarget.style.background = "#1D9E75")}
               >
                 {scenarioRunning ? "⏳ Applying…" : "✓ Save & Apply"}
               </button>
               <button onClick={() => { setDraft({ ...topic }); setEditing(false); }}
-                className="flex-1 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs font-semibold transition-colors">
+                className="flex-1 py-2.5 rounded-xl text-xs font-semibold transition-colors"
+                style={{ background: "#fff", border: "1px solid #dce5ef", color: "#64748b" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#f0f4f8")}
+                onMouseLeave={e => (e.currentTarget.style.background = "#fff")}>
                 Cancel
               </button>
             </>
@@ -1078,13 +1340,15 @@ function DeleteConfirmModal({
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const { state, trigger, approve, agentAction, reset, dismissEmailSummary, showLastSummary, triggerTopicAction } = useMeshStream();
+  const { state, trigger, approve, agentAction, reset, dismissEmailSummary, showLastSummary, triggerTopicAction, triggerTopicHeal } = useMeshStream();
   const phase = state.mralPhase ?? "idle";
 
   // ── Topics state + live metrics animation ────────────────────────────────
   const [topics, setTopics] = useState<KafkaTopic[]>(INITIAL_TOPICS);
   const [selectedTopic, setSelectedTopic] = useState<KafkaTopic | null>(null);
   const [pendingDelete, setPendingDelete] = useState<KafkaTopic | null>(null);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [copyTemplate, setCopyTemplate] = useState<KafkaTopic | null>(null);
   // Track prev lag per topic for ▲▼ trend indicator
   const prevLagRef = useRef<Record<string, number>>({});
 
@@ -1110,6 +1374,7 @@ export default function Dashboard() {
   }, []);
 
   const [extraOpen, setExtraOpen] = useState(false);
+  const [brokerOpen, setBrokerOpen] = useState(false);
 
   const handleTopicSave = (updated: KafkaTopic) => {
     const prev = topics.find((t) => t.id === updated.id)!;
@@ -1121,6 +1386,37 @@ export default function Dashboard() {
       prevTopic: { name: prev.name, partitions: prev.partitions },
     };
     triggerTopicAction(payload);
+  };
+
+  const handleTopicCreate = (newTopic: KafkaTopic) => {
+    setTopics((ts) => [...ts, newTopic]);
+    setCreateModalOpen(false);
+    setCopyTemplate(null);
+    const payload: TopicChangePayload = {
+      operation: "create",
+      topic: { name: newTopic.name, partitions: newTopic.partitions, replicationFactor: newTopic.replicationFactor, retentionHours: newTopic.retentionHours },
+    };
+    triggerTopicAction(payload);
+  };
+
+  const handleTopicHeal = (topic: KafkaTopic) => {
+    setSelectedTopic(null);  // close modal immediately so user sees the canvas animate
+    if (topic.status === "healthy") return;
+    const payload: TopicHealPayload = {
+      topicName: topic.name,
+      currentStatus: topic.status as "degraded" | "critical",
+      lagTotal: topic.lagTotal,
+      partitions: topic.partitions,
+    };
+    // onComplete callback: mark topic healthy with drained lag in topics state
+    const onComplete = () => {
+      setTopics((prev) => prev.map((t) =>
+        t.id === topic.id
+          ? { ...t, lagTotal: Math.round(t.lagTotal * (topic.status === "critical" ? 0.04 : 0.09)), status: "healthy" as KafkaTopic["status"] }
+          : t
+      ));
+    };
+    triggerTopicHeal(payload, onComplete);
   };
 
   const handleTopicDeleteConfirm = () => {
@@ -1137,17 +1433,19 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-slate-100 flex flex-col">
+    <div className="h-screen overflow-hidden flex flex-col" style={{ background: "#f0f4f8" }}>
 
-      {/* ── Nav bar — professional deep blue ── */}
-      <nav className="bg-blue-800 px-6 py-3 flex items-center justify-between sticky top-0 z-30 shadow-md">
+      {/* ── Nav bar — Arctic Navy ── */}
+      <nav className="px-6 py-3 flex items-center justify-between sticky top-0 z-30"
+           style={{ background: "#1e3a5f", boxShadow: "0 1px 0 rgba(255,255,255,0.06), 0 2px 8px rgba(0,0,0,0.18)" }}>
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-white/15 rounded-lg flex items-center justify-center text-white font-bold text-sm border border-white/20">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm"
+               style={{ background: "#1D9E75", border: "1px solid rgba(255,255,255,0.15)" }}>
             ⚡
           </div>
           <div>
             <div className="text-sm font-bold text-white tracking-tight">Agent Mesh SRE</div>
-            <div className="text-[10px] text-blue-200 font-medium">Monitor · Reason · Act · Learn</div>
+            <div className="text-[10px] font-medium" style={{ color: "#93c5fd" }}>Monitor · Reason · Act · Learn</div>
           </div>
         </div>
 
@@ -1164,23 +1462,26 @@ export default function Dashboard() {
           {/* Connection status */}
           <div className={clsx("flex items-center gap-1.5 rounded-full px-3 py-1.5 border text-xs font-semibold",
             state.connected
-              ? "bg-green-50 border-green-200 text-green-700"
+              ? "bg-emerald-50 border-emerald-200 text-emerald-700"
               : "bg-red-50 border-red-200 text-red-700")}>
             <div className={clsx("w-1.5 h-1.5 rounded-full",
-              state.connected ? "animate-pulse bg-green-500" : "bg-red-500")} />
+              state.connected ? "animate-pulse bg-emerald-500" : "bg-red-500")} />
             {state.connected ? "Live" : "Reconnecting…"}
           </div>
 
           {/* Kafka mode */}
           {state.broker && (
-            <div className="text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-3 py-1.5">
+            <div className="text-xs font-semibold rounded-full px-3 py-1.5"
+                 style={{ background: "rgba(29,158,117,0.18)", color: "#9ADFC8", border: "1px solid rgba(29,158,117,0.3)" }}>
               {state.broker.mode} mode
             </div>
           )}
 
           <button onClick={reset}
-            className="text-xs text-white/80 hover:text-white border border-white/20 hover:border-white/40
-                       bg-white/10 hover:bg-white/20 rounded-lg px-3 py-1.5 transition-colors">
+            className="text-xs rounded-lg px-3 py-1.5 transition-colors"
+            style={{ color: "rgba(255,255,255,0.75)", border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.08)" }}
+            onMouseEnter={e => { (e.currentTarget.style.color = "#fff"); (e.currentTarget.style.background = "rgba(255,255,255,0.16)"); }}
+            onMouseLeave={e => { (e.currentTarget.style.color = "rgba(255,255,255,0.75)"); (e.currentTarget.style.background = "rgba(255,255,255,0.08)"); }}>
             ↺ Reset
           </button>
 
@@ -1195,11 +1496,13 @@ export default function Dashboard() {
       <div className="flex flex-1 gap-0 overflow-hidden">
 
         {/* Left sidebar */}
-        <aside className="w-72 shrink-0 bg-white border-r border-slate-200 flex flex-col gap-5 p-4 overflow-y-auto shadow-sm">
+        <aside className="w-72 shrink-0 flex flex-col gap-5 p-4 overflow-y-auto"
+               style={{ background: "#f8fafc", borderRight: "1px solid #dce5ef" }}>
 
           {/* Pinned Scenarios */}
           <div>
-            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3">
+            <div className="text-[11px] font-bold uppercase tracking-widest mb-3"
+                 style={{ color: "#1e3a5f", opacity: 0.55 }}>
               Common Scenarios
             </div>
             <div className="space-y-2">
@@ -1208,13 +1511,13 @@ export default function Dashboard() {
                   key={s.id}
                   disabled={state.scenarioRunning}
                   onClick={() => trigger(s.id)}
-                  className="w-full text-left rounded-xl p-3 border transition-all
-                             disabled:opacity-40 disabled:cursor-not-allowed
-                             bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50
-                             shadow-sm group"
+                  className="w-full text-left rounded-xl p-3 border transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                  style={{ background: "#fff", borderColor: "#dce5ef" }}
+                  onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) { (e.currentTarget.style.borderColor = "#1D9E75"); (e.currentTarget.style.background = "#f0faf6"); }}}
+                  onMouseLeave={e => { (e.currentTarget.style.borderColor = "#dce5ef"); (e.currentTarget.style.background = "#fff"); }}
                 >
                   <div className="flex items-start justify-between gap-1.5">
-                    <span className="text-xs font-semibold text-slate-700 group-hover:text-blue-800 leading-tight">
+                    <span className="text-xs font-semibold leading-tight" style={{ color: "#1e3a5f" }}>
                       {s.label}
                     </span>
                     <span className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded-md"
@@ -1231,10 +1534,11 @@ export default function Dashboard() {
           <div>
             <button
               onClick={() => setExtraOpen((o) => !o)}
-              className="w-full flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 hover:text-slate-700 transition-colors"
+              className="w-full flex items-center justify-between text-[11px] font-bold uppercase tracking-widest mb-3 transition-colors"
+              style={{ color: "#1e3a5f", opacity: 0.55 }}
             >
-              <span>More Scenarios <span className="text-slate-300 font-normal normal-case">({EXTRA_SCENARIOS.length})</span></span>
-              <span className={clsx("text-slate-400 transition-transform", extraOpen && "rotate-180")}>▾</span>
+              <span>More Scenarios <span className="font-normal normal-case" style={{ color: "#94a3b8" }}>({EXTRA_SCENARIOS.length})</span></span>
+              <span className={clsx("transition-transform", extraOpen && "rotate-180")} style={{ color: "#94a3b8" }}>▾</span>
             </button>
             {extraOpen && (
               <div className="space-y-2">
@@ -1243,13 +1547,13 @@ export default function Dashboard() {
                     key={s.id}
                     disabled={state.scenarioRunning}
                     onClick={() => trigger(s.id)}
-                    className="w-full text-left rounded-xl p-3 border transition-all
-                               disabled:opacity-40 disabled:cursor-not-allowed
-                               bg-white border-slate-200 hover:border-blue-400 hover:bg-blue-50
-                               shadow-sm group"
+                    className="w-full text-left rounded-xl p-3 border transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                    style={{ background: "#fff", borderColor: "#dce5ef" }}
+                    onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) { (e.currentTarget.style.borderColor = "#1D9E75"); (e.currentTarget.style.background = "#f0faf6"); }}}
+                    onMouseLeave={e => { (e.currentTarget.style.borderColor = "#dce5ef"); (e.currentTarget.style.background = "#fff"); }}
                   >
                     <div className="flex items-start justify-between gap-1.5">
-                      <span className="text-xs font-semibold text-slate-700 group-hover:text-blue-800 leading-tight">
+                      <span className="text-xs font-semibold leading-tight" style={{ color: "#1e3a5f" }}>
                         {s.label}
                       </span>
                       <span className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded-md"
@@ -1263,38 +1567,6 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Broker panel */}
-          {state.broker && (
-            <div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">
-                Broker
-              </div>
-              <div className="space-y-1.5 bg-slate-50 rounded-xl p-3 border border-slate-200">
-                {Object.entries(state.broker.topics).map(([topic, t]) => (
-                  <div key={topic} className="flex items-center justify-between gap-2">
-                    <span className="text-[9px] text-slate-500 truncate">{topic.split(".").pop()}</span>
-                    <span className={clsx("text-[9px] font-bold",
-                      (t as { lag: number }).lag > 0 ? "text-amber-600" : "text-slate-400")}>
-                      lag {(t as { lag: number }).lag.toLocaleString()}
-                    </span>
-                  </div>
-                ))}
-                <div className="border-t border-slate-200 mt-2 pt-2 space-y-1">
-                  {Object.entries(state.broker.consumerGroups).map(([group, g]) => (
-                    <div key={group} className="flex items-center justify-between">
-                      <span className="text-[9px] text-slate-500 truncate">{group}</span>
-                      <span className={clsx("text-[9px] font-bold",
-                        (g as { lag: number }).lag > 5000 ? "text-red-600" :
-                        (g as { lag: number }).lag > 0   ? "text-amber-600" : "text-emerald-600")}>
-                        {(g as { lag: number }).lag.toLocaleString()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Incident queue — warning yellow */}
           {state.incidentQueueDepth > 0 && (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
@@ -1305,13 +1577,14 @@ export default function Dashboard() {
           )}
 
           {/* Kafka Topics panel */}
-          <TopicsPanel topics={topics} prevLagRef={prevLagRef} onSelect={setSelectedTopic} />
+          <TopicsPanel topics={topics} prevLagRef={prevLagRef} onSelect={setSelectedTopic} onCreateNew={() => setCreateModalOpen(true)} />
         </aside>
 
-        {/* Canvas */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+        {/* Canvas — white + dot grid */}
+        <main className="flex-1 flex flex-col overflow-hidden" style={{ background: "#ffffff" }}>
           {/* relative here is safe — AgentCanvas is a direct child with w-full h-full */}
-          <div className="flex-1 p-4 min-h-0 relative">
+          <div className="flex-1 p-4 min-h-0 relative"
+               style={{ backgroundImage: "radial-gradient(circle, #c8d8e8 1px, transparent 1px)", backgroundSize: "24px 24px" }}>
             <AgentCanvas
               agents={state.agents}
               broker={state.broker}
@@ -1319,6 +1592,103 @@ export default function Dashboard() {
               onKill={(id) => agentAction(id, "kill")}
               onRestart={(id) => agentAction(id, "restart")}
             />
+
+            {/* ── Floating broker popup — pinned top-left of canvas ── */}
+            {state.broker && (
+              <div className="absolute top-3 left-3 z-10">
+                {/* Toggle button */}
+                <button
+                  onClick={() => setBrokerOpen((o) => !o)}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-bold transition-all shadow-sm"
+                  style={{
+                    background: brokerOpen ? "#1e3a5f" : "rgba(255,255,255,0.92)",
+                    color: brokerOpen ? "#93c5fd" : "#1e3a5f",
+                    border: "1px solid #dce5ef",
+                    backdropFilter: "blur(4px)",
+                  }}
+                  onMouseEnter={e => { if (!brokerOpen) { (e.currentTarget as HTMLElement).style.background = "#1e3a5f"; (e.currentTarget as HTMLElement).style.color = "#93c5fd"; }}}
+                  onMouseLeave={e => { if (!brokerOpen) { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.92)"; (e.currentTarget as HTMLElement).style.color = "#1e3a5f"; }}}
+                >
+                  <span>⚙️</span>
+                  <span>Broker</span>
+                  <span style={{ color: state.broker.brokersOnline > 0 ? "#1D9E75" : "#dc2626", marginLeft: 2 }}>
+                    {state.broker.brokersOnline}n
+                  </span>
+                  <span className="ml-1" style={{ color: brokerOpen ? "#93c5fd" : "#94a3b8", fontSize: 9 }}>
+                    {brokerOpen ? "▴" : "▾"}
+                  </span>
+                </button>
+
+                {/* Dropdown panel */}
+                {brokerOpen && (
+                  <div className="mt-1.5 rounded-xl shadow-xl overflow-hidden animate-[slideDown_0.15s_ease-out]"
+                       style={{ background: "#fff", border: "1px solid #dce5ef", minWidth: "220px", maxWidth: "260px" }}>
+
+                    {/* Header */}
+                    <div className="flex items-center justify-between px-3 py-2"
+                         style={{ background: "#1e3a5f" }}>
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "#93c5fd" }}>
+                          Kafka Broker
+                        </div>
+                        <div className="text-[9px] mt-0.5" style={{ color: "rgba(255,255,255,0.6)" }}>
+                          {state.broker.mode} · epoch {state.broker.controllerEpoch} ·{" "}
+                          <span style={{ color: state.broker.mtls ? "#6ee7b7" : "#fca5a5" }}>
+                            {state.broker.mtls ? "mTLS ✓" : "mTLS ✗"}
+                          </span>
+                          {" · "}
+                          <span style={{ color: state.broker.sasl ? "#6ee7b7" : "#fca5a5" }}>
+                            {state.broker.sasl ? "SASL ✓" : "SASL ✗"}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setBrokerOpen(false)}
+                        className="text-sm leading-none transition-colors"
+                        style={{ color: "#93c5fd" }}
+                        onMouseEnter={e => (e.currentTarget.style.color = "#fff")}
+                        onMouseLeave={e => (e.currentTarget.style.color = "#93c5fd")}
+                      >×</button>
+                    </div>
+
+                    {/* Topic lags */}
+                    <div className="px-3 pt-2 pb-1">
+                      <div className="text-[9px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "#94a3b8" }}>Topic Lags</div>
+                      <div className="space-y-1">
+                        {Object.entries(state.broker.topics).map(([topic, t]) => (
+                          <div key={topic} className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] truncate max-w-[130px]" style={{ color: "#64748b" }}>{topic.split(".").slice(-2).join(".")}</span>
+                            <span className={clsx("text-[9px] font-bold shrink-0",
+                              (t as { lag: number }).lag > 5000 ? "text-red-600" :
+                              (t as { lag: number }).lag > 0     ? "text-amber-600" : "text-[#94a3b8]")}>
+                              {(t as { lag: number }).lag.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Consumer group lags */}
+                    <div className="px-3 pt-2 pb-3" style={{ borderTop: "1px solid #f0f4f8" }}>
+                      <div className="text-[9px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "#94a3b8" }}>Consumer Groups</div>
+                      <div className="space-y-1">
+                        {Object.entries(state.broker.consumerGroups).map(([group, g]) => (
+                          <div key={group} className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] truncate max-w-[130px]" style={{ color: "#64748b" }}>{group}</span>
+                            <span className={clsx("text-[9px] font-bold shrink-0",
+                              (g as { lag: number }).lag > 5000 ? "text-red-600" :
+                              (g as { lag: number }).lag > 0   ? "text-amber-600" : "text-emerald-600")}>
+                              {(g as { lag: number }).lag.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <AgentLiveFeed
               log={state.auditLog}
               agents={state.agents}
@@ -1327,12 +1697,12 @@ export default function Dashboard() {
             />
           </div>
 
-          {/* Notifications strip — light green, click to re-open summary */}
+          {/* Notifications strip — emerald Arctic, click to re-open summary */}
           {state.notifications.length > 0 && (
-            <div className="shrink-0 border-t border-green-100 bg-green-50 px-4 py-2">
+            <div className="shrink-0 px-4 py-2" style={{ borderTop: "1px solid rgba(29,158,117,0.18)", background: "rgba(29,158,117,0.05)" }}>
               <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
                 {state.lastEmailSummary && (
-                  <span className="shrink-0 text-[9px] text-green-500 font-semibold whitespace-nowrap">
+                  <span className="shrink-0 text-[9px] font-semibold whitespace-nowrap" style={{ color: "#1D9E75" }}>
                     ↑ click to review
                   </span>
                 )}
@@ -1341,15 +1711,15 @@ export default function Dashboard() {
                     key={n.id}
                     onClick={showLastSummary}
                     title="Click to view full scenario summary"
-                    className="shrink-0 flex items-center gap-2 bg-white border border-green-200
-                               rounded-lg px-3 py-1.5 text-xs shadow-sm
-                               hover:border-blue-400 hover:bg-blue-50 hover:shadow-md
-                               transition-all cursor-pointer group"
+                    className="shrink-0 flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs shadow-sm transition-all cursor-pointer"
+                    style={{ background: "#fff", border: "1px solid rgba(29,158,117,0.25)" }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1D9E75"; (e.currentTarget as HTMLElement).style.background = "#f0faf6"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(29,158,117,0.25)"; (e.currentTarget as HTMLElement).style.background = "#fff"; }}
                   >
                     <span>{n.channel === "slack" ? "💬" : n.channel === "itsm" ? "🎫" : "✉️"}</span>
-                    <span className="text-green-800 group-hover:text-blue-800 font-medium max-w-[300px] truncate text-xs">{n.message}</span>
+                    <span className="font-medium max-w-[300px] truncate text-xs" style={{ color: "#0F6E56" }}>{n.message}</span>
                     {state.lastEmailSummary && (
-                      <span className="text-xs text-slate-400 group-hover:text-blue-500 shrink-0">📋</span>
+                      <span className="text-xs shrink-0" style={{ color: "#94a3b8" }}>📋</span>
                     )}
                   </button>
                 ))}
@@ -1359,7 +1729,8 @@ export default function Dashboard() {
         </main>
 
         {/* Right sidebar — audit log with live feed overlaid while running */}
-        <aside className="w-80 shrink-0 bg-white border-l border-slate-200 flex flex-col p-4 overflow-hidden shadow-sm">
+        <aside className="w-80 shrink-0 flex flex-col p-4 overflow-hidden"
+               style={{ background: "#f8fafc", borderLeft: "1px solid #dce5ef" }}>
           {/* Wrapper is the positioning context — live feed uses absolute inset-0 inside here */}
           <div className="flex-1 overflow-hidden relative">
             <AuditLogPanel log={state.auditLog} />
@@ -1370,18 +1741,20 @@ export default function Dashboard() {
             />
           </div>
 
-          {/* Lessons learned — light cyan */}
+          {/* Lessons learned — emerald Arctic */}
           {state.lessons.length > 0 && (
-            <div className="shrink-0 mt-4 border-t border-slate-200 pt-3">
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">
+            <div className="shrink-0 mt-4 pt-3" style={{ borderTop: "1px solid #dce5ef" }}>
+              <div className="text-xs font-bold uppercase tracking-widest mb-2"
+                   style={{ color: "#1e3a5f", opacity: 0.55 }}>
                 Lessons Learned ({state.lessons.length})
               </div>
               <div className="space-y-2 max-h-40 overflow-y-auto">
                 {[...state.lessons].reverse().slice(0, 5).map((l) => (
                   <div key={l.id}
-                    className="bg-cyan-50 rounded-lg px-3 py-2.5 border border-cyan-100">
-                    <div className="text-xs text-cyan-700 font-semibold truncate">[{l.scenarioId}] {l.actionTaken}</div>
-                    <div className="text-xs text-slate-500 mt-0.5 leading-relaxed">{l.notes.slice(0, 80)}…</div>
+                    className="rounded-lg px-3 py-2.5"
+                    style={{ background: "#e6f5f0", border: "1px solid #a3d9c8" }}>
+                    <div className="text-xs font-semibold truncate" style={{ color: "#0F6E56" }}>[{l.scenarioId}] {l.actionTaken}</div>
+                    <div className="text-xs mt-0.5 leading-relaxed" style={{ color: "#475569" }}>{l.notes.slice(0, 80)}…</div>
                   </div>
                 ))}
               </div>
@@ -1402,6 +1775,8 @@ export default function Dashboard() {
           onClose={() => setSelectedTopic(null)}
           onSave={handleTopicSave}
           onDelete={(t) => setPendingDelete(t)}
+          onHeal={handleTopicHeal}
+          onCopy={(t) => { setCopyTemplate(t); setSelectedTopic(null); }}
         />
       )}
       {pendingDelete && (
@@ -1409,6 +1784,14 @@ export default function Dashboard() {
           topic={pendingDelete}
           onConfirm={handleTopicDeleteConfirm}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+      {(createModalOpen || !!copyTemplate) && (
+        <CreateTopicModal
+          existingTopics={topics}
+          templateTopic={copyTemplate ?? undefined}
+          onClose={() => { setCreateModalOpen(false); setCopyTemplate(null); }}
+          onCreate={handleTopicCreate}
         />
       )}
       <ToastStack toasts={state.toasts} />

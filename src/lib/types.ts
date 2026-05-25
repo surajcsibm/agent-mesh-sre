@@ -326,6 +326,7 @@ export interface AgentSummaryPayload {
   slackMessage: string;
   itsmTicket: string;
   approvedBy: string | null;
+  liveEvents?: Array<{ type: string; agent: string; summary: string; ts: number }>;
 }
 
 export type EmailResult =

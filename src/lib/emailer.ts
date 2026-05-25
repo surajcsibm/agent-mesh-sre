@@ -43,6 +43,37 @@ function buildHtml(p: AgentSummaryPayload): string {
   const lessonNotes = isRejected
     ? "No lesson recorded — action was rejected by operator. Cluster was not modified."
     : (p.lesson?.notes ?? "—");
+
+  const EVENT_COLORS: Record<string, { bg: string; color: string; border: string }> = {
+    publish:      { bg: "#dbeafe", color: "#1d4ed8", border: "#93c5fd" },
+    consume:      { bg: "#dcfce7", color: "#166534", border: "#86efac" },
+    reasoning:    { bg: "#ede9fe", color: "#6d28d9", border: "#c4b5fd" },
+    "tool-call":  { bg: "#ffedd5", color: "#9a3412", border: "#fdba74" },
+    approval:     { bg: "#fef9c3", color: "#92400e", border: "#fde047" },
+    lesson:       { bg: "#cffafe", color: "#155e75", border: "#67e8f9" },
+    notification: { bg: "#fce7f3", color: "#9d174d", border: "#f9a8d4" },
+  };
+  const eventsTableHtml = p.liveEvents?.length
+    ? `<table width="100%" cellpadding="6" cellspacing="0"
+         style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;color:#1e293b;">
+        <tr style="background:#f1f5f9;border-bottom:1px solid #e2e8f0;">
+          <th style="text-align:left;padding:8px 12px;color:#64748b;font-weight:600;width:80px;">Event</th>
+          <th style="text-align:left;padding:8px 12px;color:#64748b;font-weight:600;width:90px;">Agent</th>
+          <th style="text-align:left;padding:8px 12px;color:#64748b;font-weight:600;">Summary</th>
+        </tr>
+        ${p.liveEvents.map((ev, i) => {
+          const c = EVENT_COLORS[ev.type] ?? { bg: "#f1f5f9", color: "#475569", border: "#cbd5e1" };
+          const bg = i % 2 === 0 ? "#ffffff" : "#f8fafc";
+          return `<tr style="background:${bg};border-bottom:1px solid #f1f5f9;">
+            <td style="padding:7px 12px;">
+              <span style="background:${c.bg};color:${c.color};border:1px solid ${c.border};border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;white-space:nowrap;">${ev.type}</span>
+            </td>
+            <td style="padding:7px 12px;color:#64748b;font-size:11px;">[${ev.agent}]</td>
+            <td style="padding:7px 12px;color:#334155;font-size:12px;line-height:1.5;">${ev.summary}</td>
+          </tr>`;
+        }).join("")}
+      </table>`
+    : `<p style="color:#94a3b8;font-size:12px;margin:0;">No events captured for this scenario run.</p>`;
   const adjustedThreshold = (!isRejected && p.lesson?.adjustedThreshold)
     ? `Adjusted threshold → ${p.lesson.adjustedThreshold.toLocaleString()} msgs`
     : "";
@@ -155,6 +186,14 @@ function buildHtml(p: AgentSummaryPayload): string {
       🚫 <strong>No notifications sent</strong> — action was rejected by operator. No Slack message or ITSM ticket created.
     </div>
   </td></tr>`}
+
+  <!-- Live Events Timeline -->
+  <tr><td style="padding:20px 32px 0;">
+    <div style="font-size:13px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;">
+      📡 Live Events Timeline
+    </div>
+    ${eventsTableHtml}
+  </td></tr>
 
   <!-- Footer -->
   <tr><td style="padding:24px 32px;border-top:1px solid #e2e8f0;margin-top:24px;">

@@ -29,6 +29,7 @@ export async function POST(req: Request) {
     };
     slackMessage?: string;
     itsmTicket?: string;
+    liveEvents?: Array<{ type: string; agent: string; summary: string; ts: number }>;
   };
 
   const scenarioId    = body.scenarioId    ?? "demo";
@@ -42,7 +43,7 @@ export async function POST(req: Request) {
   // Use passed reasoning or generate a sensible default
   const r = body.reasoning;
 
-  const result = await sendAgentSummary({
+  const result = await sendAgentSummary({ liveEvents: body.liveEvents,
     scenarioId,
     scenarioLabel,
     ts: Date.now(),

@@ -5,7 +5,7 @@ import type {
   AgentState, BrokerState, MralPhase, ApprovalRequest,
   AuditRecord, LessonRecord, NotificationRecord, BusEvent,
 } from "@/lib/types";
-import { runClientScenario, resolvePendingApproval, runTopicManagement, type ScenarioKey, type SimAction, type EmailSummaryData, type TopicChangePayload } from "@/lib/client-sim";
+import { runClientScenario, resolvePendingApproval, runTopicManagement, runTopicHeal, type ScenarioKey, type SimAction, type EmailSummaryData, type TopicChangePayload, type TopicHealPayload } from "@/lib/client-sim";
 
 export interface MeshClientState {
   agents: AgentState[];
@@ -24,7 +24,7 @@ export interface MeshClientState {
   lastEmailSummary: EmailSummaryData | null;
 }
 
-export type { EmailSummaryData, TopicChangePayload };
+export type { EmailSummaryData, TopicChangePayload, TopicHealPayload };
 
 type Action =
   | { type: "state"; payload: Omit<MeshClientState, "toasts" | "particles" | "connected" | "auditLog" | "lessons" | "notifications" | "emailSummary"> & { auditLog?: AuditRecord[]; lessons?: LessonRecord[]; notifications?: NotificationRecord[]; scenarioRunning?: boolean } }
@@ -198,5 +198,9 @@ export function useMeshStream() {
     runTopicManagement(payload, dispatch as (a: SimAction) => void);
   };
 
-  return { state, trigger, approve, agentAction, reset, dismissEmailSummary, showLastSummary, triggerTopicAction };
+  const triggerTopicHeal = (payload: TopicHealPayload, onComplete?: () => void) => {
+    runTopicHeal(payload, dispatch as (a: SimAction) => void, onComplete);
+  };
+
+  return { state, trigger, approve, agentAction, reset, dismissEmailSummary, showLastSummary, triggerTopicAction, triggerTopicHeal };
 }
