@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body {
+  background: #0a0f1e;
+  color: #e2e8f0;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+* { box-sizing: border-box; }
+*:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+
+/* ReactFlow dark theme overrides */
+.react-flow__background { background: #0a0f1e !important; }
+.react-flow__edge-path { stroke: #334155 !important; stroke-width: 2 !important; }
+.react-flow__edge-path.animated { stroke: #3b82f6 !important; }
+.react-flow__controls { background: #1e293b !important; border: 1px solid #334155 !important; }
+.react-flow__controls-button { background: #1e293b !important; border-color: #334155 !important; fill: #94a3b8 !important; }
+.react-flow__minimap { background: #1e293b !important; border: 1px solid #334155 !important; }
