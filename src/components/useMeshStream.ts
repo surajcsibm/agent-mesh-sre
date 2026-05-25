@@ -83,6 +83,12 @@ let particleId = 0;
 export function useMeshStream() {
   const [state, dispatch] = useReducer(reducer, initial);
   const esRef = useRef<EventSource | null>(null);
+  // Ref always holds the latest non-null emailSummary so showLastSummary is never stale,
+  // regardless of when in the render cycle the button is clicked.
+  const lastSummaryRef = useRef<EmailSummaryData | null>(null);
+  if (state.emailSummary !== null) {
+    lastSummaryRef.current = state.emailSummary;
+  }
 
   useEffect(() => {
     let retryMs = 1000;
@@ -178,8 +184,9 @@ export function useMeshStream() {
   const dismissEmailSummary = () => dispatch({ type: "emailSummary", data: null });
 
   const showLastSummary = () => {
-    if (state.lastEmailSummary) {
-      dispatch({ type: "lastEmailSummary", data: state.lastEmailSummary });
+    // Use the ref — never stale, always holds the last non-null emailSummary
+    if (lastSummaryRef.current) {
+      dispatch({ type: "emailSummary", data: lastSummaryRef.current });
     }
   };
 

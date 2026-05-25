@@ -553,15 +553,19 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
       dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       particle(dispatch, "e-req", "intake", "monitor");
       toast(dispatch, "🔍 Rebalance event detected — analysing…", "info");
+      dispatch({ type: "audit", record: auditRec("intake", "Published rebalance-detected event to ops.requests.v1", "publish", "ops.requests.v1") });
     }},
-    { ms: 1000, fn: () => {
+    { ms: 2000, fn: () => {
       agents = patch(agents, "intake",  { status: "online" });
       agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
       dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(120), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "audit", record: auditRec("monitor", "Rebalance detected on payments-consumer — cross-correlating broker + JVM metrics", "reasoning") });
       particle(dispatch, "e-metrics", "monitor", "monitor");
     }},
-    { ms: 3000, fn: () => {
+    { ms: 4500, fn: () => {
+      dispatch({ type: "audit", record: auditRec("monitor", "Lag 120 msgs within SLO · JVM heap 41% normal · rolling restart pattern confirmed — false positive", "reasoning") });
+    }},
+    { ms: 6000, fn: () => {
       agents = patch(agents, "monitor", { status: "acting", mralPhase: "act",
         lastReasoning: {
           rootCause: "Routine rolling-restart rebalance — not a lag anomaly",
@@ -581,13 +585,14 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
       toast(dispatch, "🛡️ False positive suppressed — no action needed", "success");
       particle(dispatch, "e-inc", "monitor", "writer");
     }},
-    { ms: 5000, fn: () => {
+    { ms: 9000, fn: () => {
       agents = patch(agents, "monitor", { status: "online" });
       agents = patch(agents, "writer",  { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      dispatch({ type: "audit", record: auditRec("writer", "Consuming incident · drafting false-positive suppression record", "consume") });
       particle(dispatch, "e-aud", "writer", "notification");
     }},
-    { ms: 7000, fn: () => {
+    { ms: 12000, fn: () => {
       agents = patch(agents, "writer",       { status: "online" });
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
@@ -606,11 +611,143 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
         itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.suppressRebalancePage — false positive suppressed`,
       });
     }},
-    { ms: 9000, fn: () => {
+    { ms: 15000, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
       dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
     }},
   ]);
+}
+
+// ── Topic management scenario ─────────────────────────────────────────────────
+// Triggered when user edits, deletes, or creates a Kafka topic via the
+// Topics panel. Runs a full MRAL cycle: Monitor detects the change, reasons
+// about consumer/partition impact, acts via tool call, Writer drafts the
+// change record, Notification dispatches Slack + ITSM.
+
+export interface TopicChangePayload {
+  operation: "edit" | "delete" | "create";
+  topic: { name: string; partitions: number; replicationFactor: number; retentionHours: number };
+  prevTopic?: { name: string; partitions: number };
+}
+
+export function runTopicManagement(payload: TopicChangePayload, dispatch: DispatchFn): () => void {
+  const { operation, topic, prevTopic } = payload;
+  let agents = baseAgents();
+  const allTimers: ReturnType<typeof setTimeout>[] = [];
+  function t(ms: number, fn: () => void) { allTimers.push(setTimeout(fn, ms)); }
+
+  const opLabel = operation === "edit" ? "Topic Config Update"
+    : operation === "delete" ? "Topic Deletion" : "New Topic Created";
+  const partitionDelta = (prevTopic && operation === "edit") ? topic.partitions - prevTopic.partitions : 0;
+
+  t(0, () => {
+    agents = patch(agents, "intake", { status: "acting", mralPhase: "act" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("intake", `Published ${opLabel} event for ${topic.name} to ops.requests.v1`, "publish", "ops.requests.v1") });
+    particle(dispatch, "e-req", "intake", "monitor");
+    toast(dispatch, `📋 ${opLabel}: ${topic.name}`, "info");
+  });
+
+  t(2000, () => {
+    agents = patch(agents, "intake", { status: "online", mralPhase: "idle" });
+    agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    if (operation === "delete") {
+      dispatch({ type: "audit", record: auditRec("monitor", `Topic deletion requested: ${topic.name} — checking active consumer groups and pending offsets`, "reasoning") });
+    } else if (operation === "edit" && partitionDelta > 0) {
+      dispatch({ type: "audit", record: auditRec("monitor", `Partition increase detected: ${topic.name} ${prevTopic?.partitions}→${topic.partitions} — assessing cooperative rebalance impact`, "reasoning") });
+    } else if (operation === "edit" && partitionDelta < 0) {
+      dispatch({ type: "audit", record: auditRec("monitor", `⚠️ Partition decrease ${topic.name} ${prevTopic?.partitions}→${topic.partitions} — WARNING: partition reduction causes data redistribution`, "reasoning") });
+    } else if (operation === "create") {
+      dispatch({ type: "audit", record: auditRec("monitor", `New topic ${topic.name}: ${topic.partitions}p × RF${topic.replicationFactor} · retention ${topic.retentionHours}h — validating broker capacity`, "reasoning") });
+    } else {
+      dispatch({ type: "audit", record: auditRec("monitor", `Config update for ${topic.name}: retention=${topic.retentionHours}h RF=${topic.replicationFactor} — assessing impact`, "reasoning") });
+    }
+  });
+
+  t(4500, () => {
+    if (operation === "delete") {
+      dispatch({ type: "audit", record: auditRec("monitor", `No active lag on ${topic.name} · consumer groups will auto-unsubscribe · safe to proceed`, "reasoning") });
+    } else if (partitionDelta > 0) {
+      dispatch({ type: "audit", record: auditRec("monitor", `Partition increase triggers KIP-848 cooperative rebalance · consumers will redistribute · ~10s rebalance window expected`, "reasoning") });
+    } else if (operation === "create") {
+      dispatch({ type: "audit", record: auditRec("monitor", `Broker capacity sufficient · partition assignment plan: ${topic.partitions} leaders spread across 3 brokers · RF=${topic.replicationFactor} satisfies durability`, "reasoning") });
+    }
+  });
+
+  t(6500, () => {
+    agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    if (operation === "delete") {
+      dispatch({ type: "audit", record: auditRec("monitor", `kafka.deleteTopic(topic=${topic.name}) — partitions removed, offsets cleared, consumer groups unsubscribed`, "tool-call") });
+    } else if (operation === "edit") {
+      dispatch({ type: "audit", record: auditRec("monitor", `kafka.alterTopicConfig(topic=${topic.name}, partitions=${topic.partitions}, retentionMs=${topic.retentionHours * 3600000}) — applied`, "tool-call") });
+    } else {
+      dispatch({ type: "audit", record: auditRec("monitor", `kafka.createTopic(name=${topic.name}, partitions=${topic.partitions}, replicationFactor=${topic.replicationFactor}) — topic online`, "tool-call") });
+    }
+    particle(dispatch, "e-inc", "monitor", "writer");
+  });
+
+  t(9500, () => {
+    agents = patch(agents, "monitor", { status: "online", mralPhase: "idle" });
+    agents = patch(agents, "writer", { status: "acting", mralPhase: "act" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("writer", `Drafting ${opLabel} change record · publishing to ops.actions.audit.v1`, "consume") });
+    particle(dispatch, "e-aud", "writer", "notification");
+  });
+
+  t(12500, () => {
+    agents = patch(agents, "writer", { status: "online", mralPhase: "idle" });
+    agents = patch(agents, "notification", { status: "acting", mralPhase: "act" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("notification", `Slack #kafka-ops posted · ITSM change record INC-${Date.now().toString().slice(-5)} opened`, "notification") });
+    dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: opLabel, message: `✅ ${opLabel}: ${topic.name} (${topic.partitions}p RF${topic.replicationFactor})`, scenarioId: "topic-management" } });
+    toast(dispatch, `✅ ${opLabel} complete — Slack + ITSM notified`, "success");
+  });
+
+  t(15000, () => {
+    agents = patch(agents, "notification", { status: "online", mralPhase: "idle" });
+    agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "learn" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "learn", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("monitor", `Lesson recorded: ${opLabel} on ${topic.name} completed — change log persisted to ops.lessons.v1`, "lesson") });
+    particle(dispatch, "e-learn", "monitor", "monitor");
+  });
+
+  t(17500, () => {
+    agents = patch(agents, "monitor", { status: "online", mralPhase: "idle" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
+    // Fire email + populate emailSummary so notification strip click re-opens the summary
+    const actionVerb = operation === "delete" ? "Deleted" : operation === "edit" ? "Reconfigured" : "Created";
+    sendEmail(dispatch, "topic-management", opLabel, 0, 0,
+      `${actionVerb} topic: ${topic.name}`,
+      {
+        approved: true,
+        approvedBy: "operator",
+        reasoning: {
+          rootCause: operation === "delete"
+            ? `Topic ${topic.name} deletion requested`
+            : operation === "edit"
+            ? `Topic ${topic.name} configuration update`
+            : `New topic ${topic.name} provisioned`,
+          kafkaFeature: "kafka.admin",
+          confidence: 0.97,
+          rationale: operation === "delete"
+            ? `Consumer groups confirmed idle. All offsets cleared. Topic safely removed.`
+            : operation === "edit"
+            ? `Config applied — partitions: ${topic.partitions}, retention: ${topic.retentionHours}h, RF: ${topic.replicationFactor}.${partitionDelta > 0 ? ` KIP-848 rebalance triggered.` : ""}`
+            : `Topic created: ${topic.partitions}p × RF${topic.replicationFactor} · ${topic.retentionHours}h retention.`,
+        },
+        lesson: {
+          notes: `${opLabel} on ${topic.name} completed. Change record persisted to ops.lessons.v1.`,
+          adjustedThreshold: undefined,
+        },
+        slackMessage: `✅ ${opLabel}: ${topic.name} (${topic.partitions}p RF${topic.replicationFactor})`,
+        itsmTicket: `CHG-${Date.now().toString().slice(-5)} — ${opLabel}`,
+      }
+    );
+  });
+
+  return () => allTimers.forEach(clearTimeout);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
