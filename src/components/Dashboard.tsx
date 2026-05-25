@@ -4,6 +4,8 @@ import dynamic from "next/dynamic";
 import { useMeshStream } from "./useMeshStream";
 import type { ApprovalRequest, AuditRecord } from "@/lib/types";
 import clsx from "clsx";
+import { useSession, signOut } from "next-auth/react";
+import { useState } from "react";
 
 // AgentCanvas uses ReactFlow which is client-only
 const AgentCanvas = dynamic(() => import("./AgentCanvas"), { ssr: false });
@@ -93,6 +95,49 @@ function ApprovalGate({ approvals, onDecide }: { approvals: ApprovalRequest[]; o
   );
 }
 
+// ── User menu (Google OAuth) ──────────────────────────────────────────────────
+
+function UserMenu() {
+  const { data: session } = useSession();
+  const [open, setOpen] = useState(false);
+
+  if (!session?.user) return null;
+
+  const name  = session.user.name  ?? "User";
+  const email = session.user.email ?? "";
+  const image = session.user.image;
+  const initials = name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase();
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800 pl-1.5 pr-3 py-1 hover:border-slate-500 transition-colors">
+        {image
+          ? <img src={image} alt={name} referrerPolicy="no-referrer"
+              className="w-6 h-6 rounded-full" />
+          : <div className="w-6 h-6 rounded-full bg-violet-600 flex items-center justify-center text-[9px] font-bold text-white">
+              {initials}
+            </div>
+        }
+        <span className="text-xs text-slate-300 max-w-[100px] truncate hidden sm:block">{name}</span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl border border-slate-700 bg-slate-900 shadow-xl z-50">
+          <div className="px-4 py-3 border-b border-slate-800">
+            <div className="text-xs font-semibold text-white truncate">{name}</div>
+            <div className="text-[10px] text-slate-500 truncate">{email}</div>
+          </div>
+          <button onClick={() => signOut({ callbackUrl: "/login" })}
+            className="w-full text-left px-4 py-2.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white rounded-b-xl transition-colors">
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   return (
     <div className="flex flex-col h-full">
@@ -165,6 +210,8 @@ export default function Dashboard() {
                        hover:border-slate-500 rounded-lg px-3 py-1.5 transition-colors">
             ↺ Reset
           </button>
+
+          <UserMenu />
         </div>
       </nav>
 

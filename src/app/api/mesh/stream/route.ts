@@ -2,7 +2,8 @@
 import { eventBus } from "@/lib/event-bus";
 import { getSnapshot } from "@/lib/mesh";
 
-export const dynamic = "force-dynamic";
+export const dynamic    = "force-dynamic";
+export const maxDuration = 60; // Vercel: keep the serverless function alive for SSE
 
 export async function GET() {
   const encoder = new TextEncoder();
