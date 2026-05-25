@@ -561,9 +561,10 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   );
 }
 
-// ── Live events feed — overlays the right audit-log sidebar while running ─────
-// Matches the audit log card UX exactly. Shown only while a scenario is
-// running; automatically hidden when the scenario-end summary appears.
+// ── Live events feed — floats above the audit log while a scenario runs ───────
+// Uses absolute inset-0 inside a dedicated relative wrapper so overflow-hidden
+// on the sidebar never clips it. Light blue/white theme matches the dashboard.
+// Hides automatically when the scenario-end summary modal appears.
 
 function LiveEventsFeed({ log, running, hidden }: {
   log: AuditRecord[];
@@ -575,37 +576,40 @@ function LiveEventsFeed({ log, running, hidden }: {
   const recent = [...log].reverse().slice(0, 8);
 
   return (
-    <div className="absolute inset-0 z-10 bg-white flex flex-col p-4 animate-[fadeIn_0.15s_ease-out]">
+    <div className="absolute inset-0 z-10 flex flex-col bg-blue-50/95 backdrop-blur-[2px]
+                    border border-blue-100 rounded-lg animate-[fadeIn_0.15s_ease-out]">
 
-      {/* Header — mirrors AuditLogPanel heading */}
-      <div className="flex items-center gap-2 mb-2 px-1">
-        <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse shrink-0" />
-        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-blue-100 shrink-0">
+        <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
+        <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">
           Live Activity
         </span>
-        <span className="ml-auto text-[10px] text-slate-300 font-normal normal-case">
+        <span className="ml-auto text-[10px] text-blue-300 font-normal">
           {log.length} events
         </span>
       </div>
 
-      {/* Cards — identical style to AuditLogPanel */}
-      <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5">
+      {/* Cards */}
+      <div className="flex-1 overflow-y-auto space-y-1.5 p-2.5 pr-2">
         {recent.length === 0 ? (
-          <p className="text-[11px] text-slate-400 italic px-1 pt-2">Waiting for events…</p>
+          <p className="text-[11px] text-blue-300 italic px-1 pt-2">Waiting for events…</p>
         ) : recent.map((r) => (
           <div key={r.id}
-            className="rounded-lg bg-slate-50 border border-slate-100 px-2.5 py-2">
+            className="rounded-lg bg-white border border-blue-100 px-2.5 py-2 shadow-sm">
+            {/* Type badge + agent */}
             <div className="flex items-center gap-1.5 mb-1 flex-wrap">
               <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
                 style={{
                   background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "18",
                   color:       AUDIT_COLOR[r.type] ?? "#94a3b8",
-                  border:     `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}30`,
+                  border:     `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}35`,
                 }}>
                 {r.type}
               </span>
               <span className="text-[9px] font-semibold text-slate-400 shrink-0">[{r.agent}]</span>
             </div>
+            {/* Full summary — no truncation */}
             <div className="text-[10px] text-slate-600 leading-snug break-words whitespace-normal">
               {r.summary}
             </div>
@@ -784,15 +788,16 @@ export default function Dashboard() {
           )}
         </main>
 
-        {/* Right sidebar — audit log + lessons (LiveEventsFeed overlays this while running) */}
-        <aside className="w-72 shrink-0 bg-white border-l border-slate-200 flex flex-col p-4 overflow-hidden shadow-sm relative">
-          <LiveEventsFeed
-            log={state.auditLog}
-            running={state.scenarioRunning}
-            hidden={!!state.emailSummary}
-          />
-          <div className="flex-1 overflow-hidden">
+        {/* Right sidebar — audit log with live feed overlaid while running */}
+        <aside className="w-72 shrink-0 bg-white border-l border-slate-200 flex flex-col p-4 overflow-hidden shadow-sm">
+          {/* Wrapper is the positioning context — live feed uses absolute inset-0 inside here */}
+          <div className="flex-1 overflow-hidden relative">
             <AuditLogPanel log={state.auditLog} />
+            <LiveEventsFeed
+              log={state.auditLog}
+              running={state.scenarioRunning}
+              hidden={!!state.emailSummary}
+            />
           </div>
 
           {/* Lessons learned — light cyan */}
