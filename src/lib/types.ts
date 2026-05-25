@@ -49,6 +49,7 @@ export type AgentStatus =
   | "reasoning"
   | "acting"
   | "awaiting-approval"
+  | "learning"
   | "crashed"
   | "replaying";
 

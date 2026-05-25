@@ -889,7 +889,7 @@ const TOPIC_STATUS_STYLE: Record<KafkaTopic["status"], { dot: string; text: stri
 };
 
 // Auto-create topics when a scenario runs — each scenario seeds its own relevant topics
-const SCENARIO_AUTO_TOPICS: Record<string, Omit<KafkaTopic, "id">[]> = {
+const SCENARIO_AUTO_TOPICS: Record<string, Omit<KafkaTopic, "id" | "createdAt">[]> = {
   "lag-spike": [
     { name: "ops.kafka.metrics.v1", partitions: 6, replicationFactor: 3, retentionHours: 24,
       lagTotal: 18500, msgPerSec: 420, status: "critical",
@@ -1087,7 +1087,7 @@ function CreateTopicModal({
   onCreate: (t: KafkaTopic) => void;
 }) {
   const isCopy = !!templateTopic;
-  const [draft, setDraft] = useState<Omit<KafkaTopic, "id" | "status" | "consumerGroups">>({
+  const [draft, setDraft] = useState<Omit<KafkaTopic, "id" | "status" | "consumerGroups" | "createdAt">>({
     name:              isCopy ? `${templateTopic!.name}.copy` : "",
     partitions:        templateTopic?.partitions        ?? 6,
     replicationFactor: templateTopic?.replicationFactor ?? 3,
