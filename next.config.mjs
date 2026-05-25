@@ -1,9 +1,4 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  reactStrictMode: false,
-  experimental: {
-    optimizePackageImports: ["lucide-react", "@xyflow/react"],
-  },
-};
+const nextConfig = {};
 
 export default nextConfig;

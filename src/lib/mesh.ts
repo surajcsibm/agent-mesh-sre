@@ -1,882 +1,686 @@
-/**
- * The agent mesh runtime.
- *
- * Responsibilities:
- *   - Holds an in-memory BrokerSim + per-agent state
- *   - Runs each of the 4 agents on its own mini-loop (setInterval)
- *   - Implements the Monitor -> Reason -> Act -> Learn pattern with
- *     observable outputs at each step
- *   - Implements deliberate kill() / restart() of any agent and replays
- *     missed events from the last committed offset
- *   - Publishes WireEvents on the EventBus for the SSE stream
- *
- * Stored on globalThis so it survives Next.js HMR and is shared across
- * route handlers in the same Node process.
- */
+// Agent Mesh Runtime — M→R→A→L loop, kill/replay, policy gates, email notifications
+// Server-side singleton via globalThis
 
-import { AGENTS } from "./agents-config";
-import { BrokerSim } from "./broker";
-import { getEventBus } from "./event-bus";
-import { getKafkaTap } from "./kafka/tap";
-import { findTool, MCP_TOOLS } from "./mcp";
+import { eventBus } from "./event-bus";
+import { sendAgentSummary } from "./emailer";
+import { kafkaProduceAudit, kafkaProduceLesson, kafkaProduce, TOPICS } from "./kafka";
 import type {
-  ActionResult,
-  AgentId,
-  AgentRuntimeState,
+  AgentState,
+  BrokerState,
   ApprovalRequest,
-  AuditEvent,
-  IncidentEvent,
-  KafkaRecord,
+  AuditRecord,
   LessonRecord,
-  McpToolCall,
-  MetricsSignal,
-  NotificationEvent,
+  NotificationRecord,
   ReasoningOutput,
-  SnapshotPayload,
-  TopicName,
-  WireEvent,
+  ActionResult,
+  MralPhase,
+  AgentId,
+  MCPToolCall,
 } from "./types";
 
-const CONSUMER_GROUP: Record<AgentId, string> = {
-  "intake-agent": "intake-cg",
-  "monitor-agent": "monitor-cg",
-  "writer-agent": "writer-cg",
-  "notification-agent": "notification-cg",
-};
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-const NEW_AGENT_STATE = (): AgentRuntimeState => ({
-  status: "online",
-  consumerLag: {},
-  committedOffsets: {},
-  inflight: 0,
-  processed: 0,
-  killed: false,
-  startedAt: Date.now(),
-});
+let uidCounter = 0;
+function uid() { return `${Date.now()}-${++uidCounter}`; }
+function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms)); }
 
-function rid(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+// ── Initial state ─────────────────────────────────────────────────────────────
+
+function makeInitialAgents(): Record<AgentId, AgentState> {
+  return {
+    intake: {
+      id: "intake", name: "Intake Agent",
+      role: "Receives user requests via MCP and publishes structured events to the mesh.",
+      status: "online", mralPhase: "idle", color: "#3b82f6",
+      lastReasoning: null, lastAction: null, lastLesson: null, consumerOffset: {},
+    },
+    monitor: {
+      id: "monitor", name: "Monitor Agent",
+      role: "SRE brain. Runs continuous Monitor→Reason→Act→Learn loop across broker and consumer telemetry.",
+      status: "online", mralPhase: "idle", color: "#8b5cf6",
+      lastReasoning: null, lastAction: null, lastLesson: null,
+      consumerOffset: { "ops.kafka.metrics.v1": 0 },
+    },
+    writer: {
+      id: "writer", name: "Writer Agent",
+      role: "Consumes audit events and drafts structured post-incident markdown reports.",
+      status: "online", mralPhase: "idle", color: "#22c55e",
+      lastReasoning: null, lastAction: null, lastLesson: null,
+      consumerOffset: { "ops.incidents.v1": 0 },
+    },
+    notification: {
+      id: "notification", name: "Notification Agent",
+      role: "Routes audit events to Slack, opens ITSM tickets, and emails a full agent summary to surajcs@gmail.com.",
+      status: "online", mralPhase: "idle", color: "#f97316",
+      lastReasoning: null, lastAction: null, lastLesson: null,
+      consumerOffset: { "ops.actions.audit.v1": 0 },
+    },
+  };
 }
 
-export class Mesh {
-  broker: BrokerSim;
-  agents: Record<AgentId, AgentRuntimeState>;
-  approvals: ApprovalRequest[] = [];
-  audit: AuditEvent[] = [];
-  notifications: NotificationEvent[] = [];
-  lessons: LessonRecord[] = [];
-  incidents: IncidentEvent[] = [];
-
-  /** When > 0, the broker keeps emitting synthetic metric signals each tick. */
-  private metricsCampaign:
-    | {
-        kind: MetricsSignal["kafkaFeature"];
-        ttl: number;
-        lagBase: number;
-        group: string;
-        rebalanceOverride?: MetricsSignal["rebalanceState"];
-      }
-    | null = null;
-
-  /** Internal tick interval handle. */
-  private tick?: ReturnType<typeof setInterval>;
-
-  constructor() {
-    this.broker = new BrokerSim();
-    // Wire the simulator to the optional KafkaJS tap so that, when in real
-    // mode, every record the agents produce is also written to the real
-    // Strimzi-managed cluster (and every record arriving on the cluster
-    // is mirrored back into the simulator). No-op when the tap is disabled.
-    getKafkaTap().attachBroker(this.broker);
-    this.agents = {
-      "intake-agent": NEW_AGENT_STATE(),
-      "monitor-agent": NEW_AGENT_STATE(),
-      "writer-agent": NEW_AGENT_STATE(),
-      "notification-agent": NEW_AGENT_STATE(),
-    };
-    this.startLoop();
-  }
-
-  /** Append to the simulator AND mirror to real Kafka via the tap (no-op
-   *  unless the tap is enabled by the Setup Wizard / mode endpoint). */
-  private appendBoth<T>(topic: TopicName, key: string, value: T): KafkaRecord<T> {
-    const rec = this.broker.append(topic, key, value);
-    getKafkaTap().publish(topic, key, value);
-    return rec;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Snapshot for new SSE clients                                     */
-  /* ---------------------------------------------------------------- */
-
-  snapshot(): SnapshotPayload {
-    const topics: SnapshotPayload["topics"] = {} as never;
-    for (const t of [
-      "ops.requests.v1",
-      "ops.kafka.metrics.v1",
-      "ops.incidents.v1",
-      "ops.actions.audit.v1",
-      "ops.lessons.v1",
-      "ops.notifications.v1",
-    ] as TopicName[]) {
-      const ends = this.broker.getLogEndOffsets(t);
-      topics[t] = {
-        partitions: ends.length,
-        logEndOffset: ends.reduce((a, b) => a + b, 0),
-        recentRecords: this.broker.recent(t, 30),
-      };
-    }
-    return {
-      agents: this.agents,
-      approvals: this.approvals.slice(-25),
-      incidents: this.incidents.slice(-25),
-      audit: this.audit.slice(-100),
-      notifications: this.notifications.slice(-25),
-      lessons: this.lessons.slice(-25),
-      topics,
-      cluster: this.broker.getClusterStatus(),
-    };
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Public API: scenarios + agent lifecycle                          */
-  /* ---------------------------------------------------------------- */
-
-  killAgent(id: AgentId): void {
-    const a = this.agents[id];
-    if (a.killed) return;
-    a.killed = true;
-    a.status = "crashed";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    this.audit_(id, "agent-kill", `${AGENTS[id].name} killed manually for replay demo.`);
-    this.log("warn", id, `Agent crashed (manual kill). Events will accumulate; replay on restart.`);
-  }
-
-  restartAgent(id: AgentId): void {
-    const a = this.agents[id];
-    if (!a.killed && a.status !== "crashed" && a.status !== "offline") return;
-    a.killed = false;
-    a.status = "replaying";
-    a.startedAt = Date.now();
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    this.audit_(id, "agent-restart", `${AGENTS[id].name} restarted - replaying from last committed offset.`);
-    this.audit_(id, "replay-start", `Replay started for ${id}`);
-    this.log("info", id, `Restart - resuming consumer group ${CONSUMER_GROUP[id]} from last committed offset...`);
-
-    // Trigger an immediate replay catch-up so the audience sees lag drain.
-    setTimeout(() => this.replayCatchup(id), 250);
-  }
-
-  reset(): void {
-    this.broker.resetAll();
-    this.agents = {
-      "intake-agent": NEW_AGENT_STATE(),
-      "monitor-agent": NEW_AGENT_STATE(),
-      "writer-agent": NEW_AGENT_STATE(),
-      "notification-agent": NEW_AGENT_STATE(),
-    };
-    this.approvals = [];
-    this.audit = [];
-    this.notifications = [];
-    this.lessons = [];
-    this.incidents = [];
-    this.metricsCampaign = null;
-    this.emit({ kind: "snapshot", payload: this.snapshot() });
-    this.log("info", "system", "Mesh reset. All topics cleared.");
-  }
-
-  /**
-   * Trigger a full demo scenario. Each scenario pushes a request through
-   * Intake and primes the metrics stream so Monitor reasons over it.
-   */
-  triggerScenario(
-    kind: "lag-spike" | "controller-failover" | "share-group-rebalance" | "partition-imbalance"
-  ): { requestId: string } {
-    const reqId = rid("req");
-    const tool = findTool("intake.submitOpsRequest")!;
-
-    // Intake's MCP tool call
-    const toolCall: McpToolCall = {
-      jsonrpc: "2.0",
-      id: rid("rpc"),
-      method: "tools/call",
-      params: { name: tool.name, arguments: { kind, requestId: reqId } },
-    };
-    this.audit_("intake-agent", "tool-call", `MCP ${tool.name}`, { toolCall });
-
-    // Publish to ops.requests.v1
-    const rec = this.appendBoth("ops.requests.v1", reqId, {
-      requestId: reqId,
-      kind,
-      actor: "operator@acme",
-      createdAt: new Date().toISOString(),
-    });
-    this.emitProduce("intake-agent", "monitor-agent", "ops.requests.v1", rec, "cyan");
-    this.audit_("intake-agent", "publish", `ops.requests.v1 partition=${rec.partition} offset=${rec.offset}`);
-
-    // Prime metrics stream so Monitor reasons over the right scenario.
-    // Each scenario produces a deterministic outcome so the demo is reliable on stage.
-    if (kind === "lag-spike") {
-      // sustained real backlog -> Monitor proposes scale-consumers with approval gate
-      this.metricsCampaign = { kind: "KIP-848", ttl: 4, lagBase: 24_000, group: "payments-consumer", rebalanceOverride: "stable" };
-    } else if (kind === "controller-failover") {
-      // KRaft leadership change -> agent acknowledges, no paging, no approval
-      this.broker.forceControllerFailover();
-      this.metricsCampaign = { kind: "KRaft", ttl: 2, lagBase: 600, group: "ledger-consumer", rebalanceOverride: "stable" };
-    } else if (kind === "share-group-rebalance") {
-      // KIP-932 share group rebalance -> agent proposes share-group checkpoint with approval
-      this.metricsCampaign = { kind: "KIP-932", ttl: 3, lagBase: 1_800, group: "claims-share-group", rebalanceOverride: "share-group-assigning" };
-    } else {
-      // partition-imbalance == "benign rebalance" demo: lag rises during healthy KIP-848
-      // cooperative rebalance -> agent SUPPRESSES the page (no approval, no scale)
-      this.metricsCampaign = { kind: "KIP-848", ttl: 3, lagBase: 8_000, group: "checkout-consumer", rebalanceOverride: "preparing-rebalance" };
-    }
-
-    // Pre-emit the first synthetic metric so Monitor has a signal to reason over
-    // when the request is consumed on the very next tick.
-    if (this.metricsCampaign) this.emitMetricSignal(this.metricsCampaign);
-
-    return { requestId: reqId };
-  }
-
-  decideApproval(approvalId: string, decision: "approved" | "rejected", actor: string): void {
-    const a = this.approvals.find((x) => x.id === approvalId);
-    if (!a || a.status !== "pending") return;
-    a.status = decision;
-    a.decidedAt = Date.now();
-    a.decidedBy = actor;
-    this.emit({ kind: "approval-update", payload: a });
-    this.audit_(a.proposedBy, "approval-decision", `${decision.toUpperCase()} by ${actor} for ${a.toolCall.params.name}`, {
-      approval: a,
-    });
-
-    if (decision === "approved") {
-      this.executeApprovedToolCall(a);
-    } else {
-      // Reject path: log and continue
-      const monitor = this.agents["monitor-agent"];
-      monitor.status = "online";
-      this.emit({ kind: "agent-state", payload: { agent: "monitor-agent", state: monitor } });
-      this.log("warn", "monitor-agent", `Tool call ${a.toolCall.params.name} REJECTED - no remediation executed.`);
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Internal loop                                                    */
-  /* ---------------------------------------------------------------- */
-
-  private startLoop(): void {
-    // Tick every 700ms; agents act probabilistically per tick.
-    this.tick = setInterval(() => this.runTick().catch(() => {}), 700);
-  }
-
-  private async runTick(): Promise<void> {
-    // 1) Synthetic metrics if a campaign is active
-    if (this.metricsCampaign && this.metricsCampaign.ttl > 0) {
-      this.emitMetricSignal(this.metricsCampaign);
-      this.metricsCampaign.ttl -= 1;
-      if (this.metricsCampaign.ttl <= 0) this.metricsCampaign = null;
-    }
-
-    // 2) Each agent processes one batch
-    if (!this.agents["intake-agent"].killed) await this.runIntake();
-    if (!this.agents["monitor-agent"].killed) await this.runMonitor();
-    if (!this.agents["writer-agent"].killed) await this.runWriter();
-    if (!this.agents["notification-agent"].killed) await this.runNotification();
-
-    // 3) Update lag metrics for all agents on every tick
-    this.refreshAllAgentLag();
-  }
-
-  private refreshAllAgentLag(): void {
-    for (const id of Object.keys(this.agents) as AgentId[]) {
-      const def = AGENTS[id];
-      const lagMap: Record<string, number> = {};
-      const offsetMap: Record<string, number> = {};
-      for (const t of def.consumes) {
-        lagMap[t] = this.broker.getLag(CONSUMER_GROUP[id], t);
-        offsetMap[t] = this.broker.getCommittedOffsets(CONSUMER_GROUP[id], t).reduce((a, b) => a + b, 0);
-      }
-      const a = this.agents[id];
-      a.consumerLag = lagMap;
-      a.committedOffsets = offsetMap;
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Per-agent runtimes                                               */
-  /* ---------------------------------------------------------------- */
-
-  private async runIntake(): Promise<void> {
-    // Intake's job is just to emit on demand via triggerScenario - nothing periodic
-  }
-
-  private async runMonitor(): Promise<void> {
-    const id: AgentId = "monitor-agent";
-    const a = this.agents[id];
-
-    // Don't start a new reasoning cycle if we're awaiting approval or already mid-cycle.
-    if (a.status === "awaiting-approval" || a.status === "reasoning" || a.status === "acting") return;
-
-    // Consume from ops.requests.v1 (operator-driven scenarios)
-    const reqs = this.broker.poll(CONSUMER_GROUP[id], "ops.requests.v1", 1);
-    const metrics = this.broker.poll(CONSUMER_GROUP[id], "ops.kafka.metrics.v1", 5);
-
-    // Acknowledge received metrics regardless (they're advisory, not required)
-    if (metrics.length > 0) {
-      this.broker.commitOffsets(CONSUMER_GROUP[id], "ops.kafka.metrics.v1", metrics);
-    }
-
-    if (reqs.length === 0) return;
-
-    // 1) Reason
-    a.status = "reasoning";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-
-    const signal = (metrics[metrics.length - 1]?.value as MetricsSignal) ?? this.fallbackSignal();
-    const recentLessons = this.lessons.slice(-3);
-    await this.delay(800); // dramatic pause for the audience
-    const reasoning = this.reason(signal, recentLessons, reqs[0]);
-    a.lastReasoning = reasoning;
-    this.audit_(id, "consume", `ops.requests.v1 partition=${reqs[0].partition} offset=${reqs[0].offset}`);
-    this.log("info", id, `Reasoning: ${reasoning.rootCause} (confidence ${(reasoning.confidence * 100).toFixed(0)}%)`);
-
-    // 2) Either request approval or act directly
-    if (reasoning.requiresApproval) {
-      const approval: ApprovalRequest = {
-        id: rid("appr"),
-        createdAt: Date.now(),
-        toolCall: reasoning.proposedToolCall,
-        reason: reasoning.rationale,
-        proposedBy: id,
-        riskLevel: "high",
-        status: "pending",
-      };
-      this.approvals.push(approval);
-      a.status = "awaiting-approval";
-      this.broker.commitOffsets(CONSUMER_GROUP[id], "ops.requests.v1", reqs);
-      this.emit({ kind: "approval-new", payload: approval });
-      this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-      this.log("warn", id, `Awaiting human approval for ${reasoning.proposedToolCall.params.name}`);
-      // Stash request so we can finish after approval
-      (a as AgentRuntimeState & { _pending?: KafkaRecord<unknown>[] })._pending = reqs;
-      return;
-    }
-
-    // No approval needed - act immediately
-    const action = await this.act(reasoning, reqs[0]);
-    a.lastAction = action;
-    a.processed += 1;
-    a.status = "learning";
-    this.broker.commitOffsets(CONSUMER_GROUP[id], "ops.requests.v1", reqs);
-    this.publishIncident(reasoning, action, signal, reqs[0]);
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-
-    setTimeout(() => this.learn(reasoning, action), 4_500);
-  }
-
-  private async runWriter(): Promise<void> {
-    const id: AgentId = "writer-agent";
-    const a = this.agents[id];
-    if (a.status === "reasoning" || a.status === "acting" || a.status === "replaying") {
-      // even when replaying, we want to drain
-    }
-
-    const incidents = this.broker.poll(CONSUMER_GROUP[id], "ops.incidents.v1", 5);
-    if (incidents.length === 0) {
-      if (a.status === "replaying") {
-        a.status = "online";
-        this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-        this.audit_(id, "replay-complete", "Replay complete - caught up to latest offset.");
-      }
-      return;
-    }
-
-    a.status = a.status === "replaying" ? "replaying" : "acting";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-
-    for (const rec of incidents) {
-      const incident = rec.value as IncidentEvent;
-      this.emitConsume("monitor-agent", id, "ops.incidents.v1", rec, "violet");
-      this.audit_(id, "consume", `ops.incidents.v1 partition=${rec.partition} offset=${rec.offset}`);
-      await this.delay(380);
-
-      const tool = findTool("writer.draftIncidentReport")!;
-      const tc: McpToolCall = {
-        jsonrpc: "2.0",
-        id: rid("rpc"),
-        method: "tools/call",
-        params: { name: tool.name, arguments: { incidentId: incident.id } },
-      };
-      this.audit_(id, "tool-call", `MCP ${tool.name} for incident=${incident.id}`, { toolCall: tc });
-
-      const md = this.draftIncidentMarkdown(incident);
-      const audited = this.appendBoth("ops.actions.audit.v1", incident.id, {
-        kind: "incident-report",
-        incidentId: incident.id,
-        markdown: md,
-        wordCount: md.split(/\s+/).length,
-      });
-      this.emitProduce(id, "notification-agent", "ops.actions.audit.v1", audited, "emerald");
-      this.audit_(id, "publish", `ops.actions.audit.v1 partition=${audited.partition} offset=${audited.offset}`);
-      a.processed += 1;
-    }
-
-    this.broker.commitOffsets(CONSUMER_GROUP[id], "ops.incidents.v1", incidents);
-    if (a.status !== "replaying") {
-      a.status = "online";
-      this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    }
-  }
-
-  private async runNotification(): Promise<void> {
-    const id: AgentId = "notification-agent";
-    const a = this.agents[id];
-
-    const recs = this.broker.poll(CONSUMER_GROUP[id], "ops.actions.audit.v1", 5);
-    const reports = recs.filter(
-      (r) => (r.value as { kind?: string })?.kind === "incident-report"
-    );
-    if (reports.length === 0) {
-      // commit non-report records so they don't accumulate as fake lag
-      if (recs.length) this.broker.commitOffsets(CONSUMER_GROUP[id], "ops.actions.audit.v1", recs);
-      return;
-    }
-
-    a.status = "acting";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-
-    for (const rec of reports) {
-      this.emitConsume("writer-agent", id, "ops.actions.audit.v1", rec, "amber");
-      const v = rec.value as { incidentId: string; markdown: string };
-
-      // Slack
-      await this.delay(280);
-      const slackTool = findTool("notify.slack")!;
-      this.audit_(id, "tool-call", `MCP ${slackTool.name}`, {
-        toolCall: { name: slackTool.name, args: { channel: "#sre-incidents", incidentId: v.incidentId } },
-      });
-      const slackNote: NotificationEvent = {
-        id: rid("note"),
-        ts: Date.now(),
-        channel: "slack",
-        title: "Incident summary posted to #sre-incidents",
-        body: v.markdown.split("\n").slice(0, 3).join("\n"),
-        link: `https://slack.example/sre-incidents/${v.incidentId}`,
-      };
-      this.notifications.push(slackNote);
-      this.emit({ kind: "notification", payload: slackNote });
-
-      // ITSM
-      await this.delay(220);
-      const itsmTool = findTool("itsm.openTicket")!;
-      this.audit_(id, "tool-call", `MCP ${itsmTool.name}`, {
-        toolCall: { name: itsmTool.name, args: { incidentId: v.incidentId } },
-      });
-      const ticket: NotificationEvent = {
-        id: rid("note"),
-        ts: Date.now(),
-        channel: "itsm",
-        title: `ServiceNow INC-${Math.floor(Math.random() * 9_000_000) + 1_000_000}`,
-        body: `Auto-opened from agent mesh for incident ${v.incidentId}`,
-        link: `https://servicenow.example/inc/${v.incidentId}`,
-      };
-      this.notifications.push(ticket);
-      this.emit({ kind: "notification", payload: ticket });
-
-      // publish to ops.notifications.v1 to close the loop
-      const out = this.appendBoth("ops.notifications.v1", v.incidentId, {
-        slack: slackNote,
-        itsm: ticket,
-      });
-      this.emitProduce(id, "notification-agent", "ops.notifications.v1", out, "amber");
-      a.processed += 1;
-    }
-
-    // commit *all* records consumed (reports and others)
-    this.broker.commitOffsets(CONSUMER_GROUP[id], "ops.actions.audit.v1", recs);
-    a.status = "online";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-  }
-
-  /** Drain whatever queued up while an agent was killed. */
-  private async replayCatchup(id: AgentId): Promise<void> {
-    if (id === "writer-agent") {
-      const a = this.agents[id];
-      a.status = "replaying";
-      this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-      // The next ticks will drain it; runWriter will set status back to "online"
-    } else if (id === "monitor-agent") {
-      const a = this.agents[id];
-      a.status = "replaying";
-      this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    } else if (id === "notification-agent") {
-      const a = this.agents[id];
-      a.status = "replaying";
-      this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    } else {
-      const a = this.agents[id];
-      a.status = "online";
-      this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Reasoning + Action + Learning                                    */
-  /* ---------------------------------------------------------------- */
-
-  private reason(
-    signal: MetricsSignal,
-    recentLessons: LessonRecord[],
-    request: KafkaRecord
-  ): ReasoningOutput {
-    const requestKind = (request.value as { kind?: string }).kind ?? "lag-spike";
-    const lessonsBlurb =
-      recentLessons.length > 0
-        ? `Last ${recentLessons.length} lessons informed this prompt: ${recentLessons
-            .map((l) => `${l.actionTaken}/${l.effective ? "effective" : "ineffective"}`)
-            .join(", ")}.`
-        : "No prior lessons available; reasoning from baseline.";
-
-    if (requestKind === "controller-failover") {
-      return {
-        rootCause:
-          "KRaft controller leadership change detected (epoch increased). Lag dipped briefly during failover but ISR is still in sync.",
-        confidence: 0.94,
-        recommendedAction: "controller-failover-ack",
-        rationale: `Healthy KRaft failover - no remediation required. ${lessonsBlurb}`,
-        requiresApproval: false,
-        kafkaFeatureCited: "KRaft",
-        proposedToolCall: {
-          jsonrpc: "2.0",
-          id: rid("rpc"),
-          method: "tools/call",
-          params: {
-            name: "kafka.acknowledgeFailover",
-            arguments: {
-              fromController: 1,
-              toController: this.broker.getClusterStatus().controllerId,
-              epoch: this.broker.getClusterStatus().controllerEpoch,
-            },
-          },
-        },
-      };
-    }
-
-    if (requestKind === "share-group-rebalance") {
-      return {
-        rootCause:
-          "KIP-932 share group offsets diverging during in-flight assignment. Standard consumer-group thresholds do not apply.",
-        confidence: 0.86,
-        recommendedAction: "share-group-rebalance-ack",
-        rationale: `Share-group rebalance is in 'share-group-assigning' state. Threshold-based pages would false-positive. Cross-checking with prior lessons. ${lessonsBlurb}`,
-        requiresApproval: true,
-        kafkaFeatureCited: "KIP-932",
-        proposedToolCall: {
-          jsonrpc: "2.0",
-          id: rid("rpc"),
-          method: "tools/call",
-          params: {
-            name: "kafka.shareGroupCheckpoint",
-            arguments: { shareGroup: signal.consumerGroup },
-          },
-        },
-      };
-    }
-
-    // Default: lag spike -> recommend scaling consumers
-    const isHealthyRebalance = signal.rebalanceState === "preparing-rebalance" ||
-      signal.rebalanceState === "completing-rebalance";
-    if (isHealthyRebalance) {
-      return {
-        rootCause:
-          "Lag spike correlates with KIP-848 cooperative rebalance in progress. This is expected churn, not a real backlog.",
-        confidence: 0.91,
-        recommendedAction: "rebalance-wait",
-        rationale: `Static alerts would page; the agent cross-references rebalance state and suppresses. ${lessonsBlurb}`,
-        requiresApproval: false,
-        kafkaFeatureCited: "KIP-848",
-        proposedToolCall: {
-          jsonrpc: "2.0",
-          id: rid("rpc"),
-          method: "tools/call",
-          params: { name: "kafka.acknowledgeFailover", arguments: { fromController: 0, toController: 0, epoch: 0 } },
-        },
-      };
-    }
-
-    return {
-      rootCause: `Sustained consumer lag (~${signal.lagMessages.toLocaleString()} msgs) on ${signal.consumerGroup}. ISR=${signal.isrCount}, JVM heap=${signal.jvmHeapPercent.toFixed(0)}%, pod CPU=${signal.podCpuPercent.toFixed(0)}%.`,
-      confidence: 0.88,
-      recommendedAction: "scale-consumers",
-      rationale: `Cross-checked rebalance state (=stable) and KRaft epoch (no change). Backlog is real. Proposing N -> N+2 scale. ${lessonsBlurb}`,
-      requiresApproval: true,
-      kafkaFeatureCited: signal.kafkaFeature === "classic" ? "KIP-848" : signal.kafkaFeature,
-      proposedToolCall: {
-        jsonrpc: "2.0",
-        id: rid("rpc"),
-        method: "tools/call",
-        params: {
-          name: "kafka.scaleConsumers",
-          arguments: {
-            consumerGroup: signal.consumerGroup,
-            delta: 2,
-            reason: `Sustained lag ~${signal.lagMessages} msgs over polling window`,
-          },
-        },
-      },
-    };
-  }
-
-  private async act(
-    reasoning: ReasoningOutput,
-    request: KafkaRecord
-  ): Promise<ActionResult> {
-    const id: AgentId = "monitor-agent";
-    const a = this.agents[id];
-    a.status = "acting";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    await this.delay(500);
-
-    const lagBefore = this.metricsCampaign?.lagBase ?? 0;
-    const tool = findTool(reasoning.proposedToolCall.params.name);
-    const success = !!tool;
-    this.audit_(id, "tool-call", `MCP ${reasoning.proposedToolCall.params.name}`, {
-      toolCall: reasoning.proposedToolCall,
-      requiresApproval: reasoning.requiresApproval,
-    });
-
-    const result: ActionResult = {
-      toolCall: reasoning.proposedToolCall,
-      approved: !reasoning.requiresApproval,
-      executedAt: Date.now(),
-      outcome: success ? "success" : "noop",
-      detail:
-        reasoning.recommendedAction === "scale-consumers"
-          ? `Scaled ${(reasoning.proposedToolCall.params.arguments as { consumerGroup: string }).consumerGroup} from N to N+2 via Strimzi CRD.`
-          : reasoning.recommendedAction === "controller-failover-ack"
-          ? "Acknowledged KRaft failover - paging suppressed."
-          : reasoning.recommendedAction === "rebalance-wait"
-          ? "Suppressed false-positive page during KIP-848 cooperative rebalance."
-          : "Share group checkpointed.",
-      lagBefore,
-      lagAfter: Math.max(0, Math.floor(lagBefore * 0.12)),
-    };
-    void request;
-    return result;
-  }
-
-  /** Execute a tool call that was previously held pending an approval. */
-  private async executeApprovedToolCall(approval: ApprovalRequest): Promise<void> {
-    const id: AgentId = "monitor-agent";
-    const a = this.agents[id];
-    const reasoning = a.lastReasoning;
-    if (!reasoning) return;
-    const pending = (a as AgentRuntimeState & { _pending?: KafkaRecord<unknown>[] })._pending ?? [];
-    const result = await this.act({ ...reasoning, requiresApproval: false, proposedToolCall: approval.toolCall }, pending[0]);
-    result.approved = true;
-    result.approvedBy = approval.decidedBy;
-    a.lastAction = result;
-    a.processed += 1;
-    a.status = "learning";
-    this.emit({ kind: "agent-state", payload: { agent: id, state: a } });
-    this.publishIncident(reasoning, result, this.fallbackSignal(), pending[0]);
-    setTimeout(() => this.learn(reasoning, result), 4_500);
-  }
-
-  private learn(reasoning: ReasoningOutput, action: ActionResult): void {
-    const lesson: LessonRecord = {
-      id: rid("lsn"),
-      ts: Date.now(),
-      scenario: reasoning.kafkaFeatureCited,
-      actionTaken: reasoning.proposedToolCall.params.name,
-      effective: (action.lagAfter ?? 0) < (action.lagBefore ?? 0) * 0.5,
-      lagBefore: action.lagBefore ?? 0,
-      lagAfter: action.lagAfter ?? 0,
-      adjustedThreshold:
-        reasoning.recommendedAction === "scale-consumers"
-          ? Math.round((action.lagBefore ?? 0) * 0.7)
-          : undefined,
-      notes: `Learned: ${reasoning.recommendedAction} in ${reasoning.kafkaFeatureCited} context.`,
-    };
-    this.lessons.push(lesson);
-
-    // Publish to ops.lessons.v1 (the LEARN topic)
-    const rec = this.appendBoth("ops.lessons.v1", lesson.id, lesson);
-    this.emitProduce("monitor-agent", "monitor-agent", "ops.lessons.v1", rec, "violet");
-    this.audit_("monitor-agent", "publish", `ops.lessons.v1 lesson=${lesson.id}`, { lesson });
-
-    this.emit({ kind: "lesson", payload: lesson });
-    const a = this.agents["monitor-agent"];
-    a.status = "online";
-    this.emit({ kind: "agent-state", payload: { agent: "monitor-agent", state: a } });
-    this.log("info", "monitor-agent", `Learn: published lesson - effective=${lesson.effective}, threshold=${lesson.adjustedThreshold ?? "n/a"}`);
-  }
-
-  private publishIncident(
-    reasoning: ReasoningOutput,
-    action: ActionResult,
-    signal: MetricsSignal,
-    request: KafkaRecord
-  ): void {
-    const incident: IncidentEvent = {
-      id: rid("inc"),
-      ts: Date.now(),
-      severity:
-        reasoning.recommendedAction === "rebalance-wait" || reasoning.recommendedAction === "controller-failover-ack"
-          ? "low"
-          : "high",
-      title:
-        reasoning.recommendedAction === "scale-consumers"
-          ? `Consumer lag spike on ${signal.consumerGroup}`
-          : reasoning.recommendedAction === "controller-failover-ack"
-          ? `KRaft controller failover ack`
-          : reasoning.recommendedAction === "share-group-rebalance-ack"
-          ? `KIP-932 share group rebalance`
-          : `KIP-848 cooperative rebalance benign`,
-      summary: reasoning.rootCause,
-      signal,
-      reasoning,
-      action,
-    };
-    this.incidents.push(incident);
-    const rec = this.appendBoth("ops.incidents.v1", incident.id, incident);
-    this.emitProduce("monitor-agent", "writer-agent", "ops.incidents.v1", rec, "violet");
-    this.audit_("monitor-agent", "publish", `ops.incidents.v1 partition=${rec.partition} offset=${rec.offset}`);
-    this.emit({ kind: "incident", payload: incident });
-    void request;
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Helpers                                                          */
-  /* ---------------------------------------------------------------- */
-
-  private emitMetricSignal(c: NonNullable<Mesh["metricsCampaign"]>): void {
-    const signal: MetricsSignal = {
-      brokerId: 1 + Math.floor(Math.random() * 3),
-      topic: "payments.events",
-      partition: Math.floor(Math.random() * 6),
-      consumerGroup: c.group,
-      lagMessages: Math.max(0, Math.floor(c.lagBase * (0.6 + Math.random() * 0.5))),
-      isrCount: 3,
-      rebalanceState:
-        c.rebalanceOverride ??
-        (c.kind === "KIP-848"
-          ? Math.random() < 0.5
-            ? "preparing-rebalance"
-            : "stable"
-          : c.kind === "KIP-932"
-          ? "share-group-assigning"
-          : "stable"),
-      controllerEpoch: this.broker.getClusterStatus().controllerEpoch,
-      jvmHeapPercent: 55 + Math.random() * 20,
-      podCpuPercent: 60 + Math.random() * 25,
-      kafkaFeature: c.kind,
-      noteForOperators: `Synthetic metric for demo (${c.kind})`,
-    };
-    const rec = this.appendBoth("ops.kafka.metrics.v1", `${c.group}.${signal.partition}`, signal);
-    this.emitProduce("intake-agent", "monitor-agent", "ops.kafka.metrics.v1", rec, "cyan");
-  }
-
-  private fallbackSignal(): MetricsSignal {
-    return {
-      brokerId: 1,
-      topic: "payments.events",
-      partition: 0,
-      consumerGroup: "payments-consumer",
-      lagMessages: 0,
-      isrCount: 3,
-      rebalanceState: "stable",
-      controllerEpoch: this.broker.getClusterStatus().controllerEpoch,
-      jvmHeapPercent: 50,
-      podCpuPercent: 50,
-      kafkaFeature: "classic",
-    };
-  }
-
-  private draftIncidentMarkdown(incident: IncidentEvent): string {
-    const r = incident.reasoning;
-    const a = incident.action;
-    return [
-      `# Incident ${incident.id}`,
-      ``,
-      `**Severity**: ${incident.severity}`,
-      `**Kafka feature implicated**: ${r.kafkaFeatureCited}`,
-      ``,
-      `## Root Cause`,
-      r.rootCause,
-      ``,
-      `## Reasoning`,
-      r.rationale,
-      ``,
-      `## Action Taken`,
-      a ? `- Tool: \`${a.toolCall.params.name}\`` : "- No action",
-      a ? `- Outcome: ${a.outcome}` : "",
-      a ? `- Detail: ${a.detail}` : "",
-      a?.lagBefore != null ? `- Lag before: ${a.lagBefore.toLocaleString()} msgs` : "",
-      a?.lagAfter != null ? `- Lag after: ${a.lagAfter.toLocaleString()} msgs` : "",
-      ``,
-      `## Audit`,
-      `- This report is published to \`ops.actions.audit.v1\` (durable, replayable, compliance-ready).`,
-      `- Approval gate: ${a?.approved ? `approved by ${a.approvedBy ?? "auto"}` : "not required"}`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-  }
-
-  private audit_(agent: AgentId | "system", kind: AuditEvent["kind"], detail: string, meta?: Record<string, unknown>): void {
-    const e: AuditEvent = {
-      id: rid("aud"),
-      ts: Date.now(),
-      agent: agent === "system" ? "monitor-agent" : agent,
-      kind,
-      detail,
-      meta,
-    };
-    this.audit.push(e);
-    if (this.audit.length > 500) this.audit.shift();
-    this.emit({ kind: "audit", payload: e });
-  }
-
-  private log(level: "info" | "warn" | "error", agent: AgentId | "system", message: string): void {
-    this.emit({ kind: "log", payload: { ts: Date.now(), agent, level, message } });
-  }
-
-  private emitProduce(source: AgentId, target: AgentId, topic: TopicName, rec: KafkaRecord, color: "cyan" | "violet" | "emerald" | "amber" | "rose" | "red"): void {
-    this.emit({ kind: "topic-record", payload: rec });
-    this.emit({
-      kind: "particle",
-      payload: { id: rid("prt"), source, target, topic, color, durationMs: 1100 },
-    });
-  }
-
-  private emitConsume(source: AgentId, target: AgentId, topic: TopicName, rec: KafkaRecord, color: "cyan" | "violet" | "emerald" | "amber" | "rose" | "red"): void {
-    void rec;
-    this.emit({
-      kind: "particle",
-      payload: { id: rid("prt"), source, target, topic, color, durationMs: 900 },
-    });
-  }
-
-  private emit(e: WireEvent): void {
-    getEventBus().publish(e);
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms));
-  }
+function makeInitialBroker(): BrokerState {
+  return {
+    mode: "MOCK", controllerEpoch: 42, brokersOnline: 3, mtls: true, sasl: true, aclCount: 24,
+    topics: {
+      "ops.requests.v1":      { partitions: 6,  lag: 0, offsetHigh: 0 },
+      "ops.kafka.metrics.v1": { partitions: 6,  lag: 0, offsetHigh: 0 },
+      "ops.incidents.v1":     { partitions: 6,  lag: 0, offsetHigh: 0 },
+      "ops.actions.audit.v1": { partitions: 12, lag: 0, offsetHigh: 0 },
+      "ops.lessons.v1":       { partitions: 3,  lag: 0, offsetHigh: 0 },
+      "ops.notifications.v1": { partitions: 3,  lag: 0, offsetHigh: 0 },
+      "demo.payments.events": { partitions: 24, lag: 0, offsetHigh: 100000 },
+    },
+    consumerGroups: {
+      "payments-consumer": { lag: 0, rebalanceState: "stable", members: 3 },
+      "share-group-1":     { lag: 0, rebalanceState: "stable", members: 2 },
+    },
+  };
 }
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __agentMesh: Mesh | undefined;
+// ── Mesh state ────────────────────────────────────────────────────────────────
+
+interface MeshState {
+  agents: Record<AgentId, AgentState>;
+  broker: BrokerState;
+  pendingApprovals: ApprovalRequest[];
+  auditLog: AuditRecord[];
+  lessons: LessonRecord[];
+  notifications: NotificationRecord[];
+  incidentQueue: unknown[];
+  scenarioRunning: boolean;
+  globalMralPhase: MralPhase;
+  approvalResolvers: Map<string, (decision: "approve" | "reject") => void>;
 }
 
-export function getMesh(): Mesh {
-  if (!globalThis.__agentMesh) {
-    globalThis.__agentMesh = new Mesh();
+declare global { var __agentMeshState: MeshState | undefined; }
+
+function getMeshState(): MeshState {
+  if (!globalThis.__agentMeshState) {
+    globalThis.__agentMeshState = {
+      agents: makeInitialAgents(), broker: makeInitialBroker(),
+      pendingApprovals: [], auditLog: [], lessons: [], notifications: [],
+      incidentQueue: [], scenarioRunning: false, globalMralPhase: "idle",
+      approvalResolvers: new Map(),
+    };
   }
-  return globalThis.__agentMesh;
+  return globalThis.__agentMeshState;
 }
 
-export { MCP_TOOLS };
+// ── Broadcast & helpers ───────────────────────────────────────────────────────
+
+function broadcastState() {
+  const s = getMeshState();
+  eventBus.publish({
+    type: "state", agents: Object.values(s.agents), mralPhase: s.globalMralPhase,
+    broker: s.broker,
+    pendingApprovals: s.pendingApprovals.filter((a) => a.status === "pending"),
+    incidentQueueDepth: s.incidentQueue.length,
+  });
+}
+
+function audit(type: AuditRecord["type"], agent: AgentId | "system", summary: string, detail?: unknown, topic?: string) {
+  const rec: AuditRecord = { id: uid(), ts: Date.now(), type, agent, summary, detail, topic };
+  const s = getMeshState();
+  s.auditLog.push(rec);
+  if (s.auditLog.length > 200) s.auditLog.splice(0, 50);
+  eventBus.publish({ type: "audit", record: rec });
+  // REAL mode: mirror every audit record to ops.actions.audit.v1
+  kafkaProduceAudit(rec);
+}
+
+function particle(edgeId: string, fromNode: string, toNode: string) {
+  eventBus.publish({ type: "particle", edgeId, fromNode, toNode });
+}
+
+function toast(message: string, kind: "info" | "success" | "warning" | "error" = "info") {
+  eventBus.publish({ type: "toast", message, kind });
+}
+
+function setAgent(id: AgentId, updates: Partial<AgentState>) {
+  const s = getMeshState();
+  s.agents[id] = { ...s.agents[id], ...updates };
+  broadcastState();
+}
+
+function setMral(phase: MralPhase) {
+  getMeshState().globalMralPhase = phase;
+  broadcastState();
+}
+
+// ── Approval gate ─────────────────────────────────────────────────────────────
+
+function waitForApproval(id: string): Promise<"approve" | "reject"> {
+  return new Promise((resolve) => { getMeshState().approvalResolvers.set(id, resolve); });
+}
+
+export function resolveApproval(id: string, decision: "approve" | "reject", actor = "ops-engineer") {
+  const s = getMeshState();
+  const approval = s.pendingApprovals.find((a) => a.id === id);
+  if (!approval) return false;
+  approval.status = decision === "approve" ? "approved" : "rejected";
+  approval.approvedBy = actor;
+  const resolver = s.approvalResolvers.get(id);
+  if (resolver) { s.approvalResolvers.delete(id); resolver(decision); }
+  audit("approval", "system", `Approval ${decision}d by ${actor} for: ${approval.toolCall.params.name}`, { id, decision, actor });
+  broadcastState();
+  return true;
+}
+
+// ── Reasoning generators ──────────────────────────────────────────────────────
+
+function buildLessonsCited(s: MeshState): string[] {
+  return s.lessons.slice(-3).map(
+    (l) => `[${l.scenarioId}] ${l.actionTaken} → effective=${l.effective}, lagDelta=${(l.lagBefore ?? 0) - (l.lagAfter ?? 0)}`
+  );
+}
+
+function buildLagSpikeReasoning(s: MeshState): ReasoningOutput {
+  const lessonsCited = buildLessonsCited(s);
+  return {
+    rootCause: "Consumer lag spike detected on payments-consumer group",
+    confidence: 0.88, kafkaFeatureCited: "KIP-848",
+    rebalanceState: "stable", controllerEpoch: s.broker.controllerEpoch,
+    crossCorrelation: { brokers: "all_online", jvmHeap: "68%", networkInRate: "normal", rebalanceInProgress: false },
+    recommendedAction: "scale-consumers", requiresApproval: true,
+    rationale: "Lag of 24,000 msgs with stable rebalance state (KIP-848 cooperative — no rebalance in progress), " +
+      "no KRaft epoch change, JVM heap nominal at 68%, network in-rate normal. " +
+      "Cross-correlation rules out benign churn. Scaling payments-consumer from 3 → 5 replicas is safe. " +
+      (lessonsCited.length ? `Last ${lessonsCited.length} lessons informed this prompt: ${lessonsCited.join("; ")}.` : "No prior lessons — first occurrence."),
+    proposedToolCall: { jsonrpc: "2.0", id: uid(), method: "tools/call",
+      params: { name: "kafka.scaleConsumers", arguments: { group: "payments-consumer", delta: 2, reason: "lag_spike_remediation" } } },
+    lessonsCited,
+  };
+}
+
+function buildFailoverReasoning(s: MeshState): ReasoningOutput {
+  return {
+    rootCause: "KRaft controller leadership change detected",
+    confidence: 0.94, kafkaFeatureCited: "KRaft",
+    rebalanceState: "stable", controllerEpoch: s.broker.controllerEpoch + 1,
+    crossCorrelation: { brokers: "all_online", jvmHeap: "61%", networkInRate: "normal", rebalanceInProgress: false },
+    recommendedAction: "controller-failover-ack", requiresApproval: false,
+    rationale: `Controller epoch ${s.broker.controllerEpoch} → ${s.broker.controllerEpoch + 1} in 312ms. All 3 brokers online. Consumer lag unaffected. Routine KRaft leader election — no operational action required. Ack and audit only.`,
+    proposedToolCall: { jsonrpc: "2.0", id: uid(), method: "tools/call",
+      params: { name: "kafka.ackControllerFailover", arguments: { previousEpoch: s.broker.controllerEpoch, newEpoch: s.broker.controllerEpoch + 1, electionDurationMs: 312 } } },
+    lessonsCited: [],
+  };
+}
+
+function buildShareGroupReasoning(s: MeshState): ReasoningOutput {
+  return {
+    rootCause: "KIP-932 Share Group queue depth exceeding delivery threshold",
+    confidence: 0.86, kafkaFeatureCited: "KIP-932",
+    rebalanceState: "stable", controllerEpoch: s.broker.controllerEpoch,
+    crossCorrelation: { brokers: "all_online", jvmHeap: "72%", networkInRate: "elevated", rebalanceInProgress: false },
+    recommendedAction: "share-group-rebalance-ack", requiresApproval: true,
+    rationale: "Share group 'share-group-1' queue depth at 18,000 records. KIP-932 share group semantics require explicit checkpoint before scaling. Adding 1 consumer and committing checkpoint offset. Requires approval due to infra mutation.",
+    proposedToolCall: { jsonrpc: "2.0", id: uid(), method: "tools/call",
+      params: { name: "kafka.checkpointShareGroup", arguments: { shareGroupId: "share-group-1", delta: 1, checkpointOffset: 18000 } } },
+    lessonsCited: [],
+  };
+}
+
+function buildBenignRebalanceReasoning(s: MeshState): ReasoningOutput {
+  return {
+    rootCause: "Consumer lag spike — but KIP-848 cooperative rebalance in progress",
+    confidence: 0.91, kafkaFeatureCited: "KIP-848 suppression",
+    rebalanceState: "preparing-rebalance", controllerEpoch: s.broker.controllerEpoch,
+    crossCorrelation: { brokers: "all_online", jvmHeap: "65%", networkInRate: "normal", rebalanceInProgress: true },
+    recommendedAction: "rebalance-wait", requiresApproval: false,
+    rationale: "Lag of 16,000 msgs observed, but rebalance state is 'preparing-rebalance' — a healthy KIP-848 cooperative rebalance is in progress. Static alerting would page someone. Cross-referencing rebalance state suppresses the false positive. No action required.",
+    proposedToolCall: { jsonrpc: "2.0", id: uid(), method: "tools/call",
+      params: { name: "kafka.suppressRebalancePage", arguments: { consumerGroup: "payments-consumer", rebalanceState: "preparing-rebalance", lagObserved: 16000 } } },
+    lessonsCited: [],
+  };
+}
+
+// ── Notification Agent (with email) ──────────────────────────────────────────
+
+async function runNotification(
+  scenarioId: string,
+  actionTaken: string,
+  lagBefore?: number,
+  lagAfter?: number,
+  approvedBy?: string,
+  reasoning?: ReasoningOutput | null,
+  action?: ActionResult | null,
+  lesson?: LessonRecord | null,
+) {
+  await sleep(600);
+  setAgent("notification", { status: "acting" });
+  audit("consume", "notification", "Consuming from ops.actions.audit.v1", null, "ops.actions.audit.v1");
+  particle("e-aud", "writer", "notification");
+  await sleep(500);
+
+  const slackMsg = `*Incident resolved* | Action: ${actionTaken} | ${lagBefore ? `Lag: ${lagBefore}→${lagAfter ?? 0}` : ""} | Approved by: ${approvedBy ?? "auto"} | Scenario: ${scenarioId}`;
+  const ticketId = `INC-${Math.floor(10000 + Math.random() * 90000)}`;
+  const itsmMsg = `${ticketId} opened: ${actionTaken} — ${scenarioId}`;
+
+  const s = getMeshState();
+  const notifSlack: NotificationRecord = { id: uid(), ts: Date.now(), channel: "slack", message: slackMsg, scenarioId };
+  s.notifications.push(notifSlack);
+  eventBus.publish({ type: "notification", record: notifSlack });
+  // REAL mode: publish to ops.notifications.v1
+  kafkaProduce(TOPICS.NOTIFICATIONS, notifSlack, notifSlack.id);
+  audit("notification", "notification", "Posted to #sre-alerts Slack", { message: slackMsg });
+
+  await sleep(400);
+  const notifITSM: NotificationRecord = { id: uid(), ts: Date.now(), channel: "itsm", message: itsmMsg, scenarioId, ticketId };
+  s.notifications.push(notifITSM);
+  eventBus.publish({ type: "notification", record: notifITSM });
+  // REAL mode: publish to ops.notifications.v1
+  kafkaProduce(TOPICS.NOTIFICATIONS, notifITSM, notifITSM.id);
+  audit("notification", "notification", `Opened ITSM ticket ${ticketId}`, { ticketId, severity: "P3" });
+  particle("e-aud", "notification", "notification");
+
+  // ── Email summary to surajcs@gmail.com ──────────────────────────────────
+  toast("Notification Agent: sending email summary to surajcs@gmail.com…", "info");
+  const emailResult = await sendAgentSummary({
+    scenarioId,
+    scenarioLabel: scenarioId,
+    ts: Date.now(),
+    reasoning: reasoning ?? null,
+    action: action ?? null,
+    lesson: lesson ?? null,
+    slackMessage: slackMsg,
+    itsmTicket: itsmMsg,
+    approvedBy: approvedBy ?? null,
+  });
+
+  if (emailResult.ok) {
+    audit("notification", "notification", `Email summary sent to surajcs@gmail.com (messageId: ${emailResult.messageId})`, { to: "surajcs@gmail.com", scenarioId });
+    toast("✉ Email summary sent to surajcs@gmail.com", "success");
+    const notifEmail: NotificationRecord = { id: uid(), ts: Date.now(), channel: "email" as "slack", message: `Email summary sent to surajcs@gmail.com — ${scenarioId}`, scenarioId };
+    s.notifications.push(notifEmail);
+    eventBus.publish({ type: "notification", record: notifEmail });
+  } else if (emailResult.error === "smtp_not_configured") {
+    toast("✉ Email skipped — add SMTP credentials to .env.local", "warning");
+    audit("notification", "notification", "Email skipped — SMTP not configured (see .env.local.example)", { reason: emailResult.error });
+  } else {
+    toast(`✉ Email failed: ${emailResult.error}`, "error");
+    audit("notification", "notification", `Email failed: ${emailResult.error}`, { error: emailResult.error });
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  setAgent("notification", { status: "online", mralPhase: "idle" });
+}
+
+// ── Writer Agent ──────────────────────────────────────────────────────────────
+
+async function runWriter(
+  scenarioId: string,
+  actionTaken: string,
+  lagBefore?: number,
+  lagAfter?: number,
+  approvedBy?: string,
+) {
+  const s = getMeshState();
+  if (s.agents.writer.status === "crashed") {
+    s.incidentQueue.push({ scenarioId, actionTaken, lagBefore, lagAfter, approvedBy });
+    audit("publish", "monitor", `Queued incident on ops.incidents.v1 (Writer CRASHED, depth: ${s.incidentQueue.length})`, null, "ops.incidents.v1");
+    broadcastState();
+    toast(`Writer crashed — incident queued (depth: ${s.incidentQueue.length})`, "warning");
+    return;
+  }
+  await sleep(400);
+  particle("e-inc", "monitor", "writer");
+  // REAL mode: publish incident record to ops.incidents.v1 (monitor → writer)
+  const incidentRecord = {
+    incidentId: uid(), scenarioId, actionTaken,
+    lagBefore, lagAfter, approvedBy, ts: Date.now(),
+  };
+  kafkaProduce(TOPICS.INCIDENTS, incidentRecord, incidentRecord.incidentId);
+  setAgent("writer", { status: "acting" });
+  audit("consume", "writer", "Consuming from ops.incidents.v1", null, "ops.incidents.v1");
+  await sleep(600);
+  const report = `# Post-Incident Report\n**Scenario:** ${scenarioId}\n**Action taken:** ${actionTaken}\n**Lag:** ${lagBefore ?? "N/A"} → ${lagAfter ?? "N/A"}\n**Approved by:** ${approvedBy ?? "auto"}\n**Time:** ${new Date().toISOString()}`;
+  audit("tool-call", "writer", "sre.draftIncidentReport → report drafted", { reportMarkdown: report }, "ops.actions.audit.v1");
+  particle("e-aud", "writer", "notification");
+  setAgent("writer", { status: "online", mralPhase: "idle" });
+}
+
+// ── Learn helper ──────────────────────────────────────────────────────────────
+
+async function runLearn(scenarioId: string, actionTaken: string, effective: boolean, lagBefore?: number, lagAfter?: number): Promise<LessonRecord> {
+  await sleep(800);
+  setMral("learn");
+  setAgent("monitor", { mralPhase: "learn" });
+  const lesson: LessonRecord = {
+    id: uid(), ts: Date.now(), scenarioId, actionTaken, effective, lagBefore, lagAfter,
+    adjustedThreshold: lagBefore ? Math.floor(lagBefore * 0.9) : undefined,
+    notes: `Settled after ${actionTaken}. Adjusted threshold for future detection.`,
+  };
+  getMeshState().lessons.push(lesson);
+  setAgent("monitor", { lastLesson: lesson });
+  eventBus.publish({ type: "lesson", record: lesson });
+  // REAL mode: publish lesson to ops.lessons.v1
+  kafkaProduceLesson(lesson);
+  audit("lesson", "monitor", `Lesson published to ops.lessons.v1`, lesson, "ops.lessons.v1");
+  particle("e-learn", "monitor", "monitor");
+  await sleep(500);
+  setMral("idle");
+  setAgent("monitor", { mralPhase: "idle", status: "online" });
+  broadcastState();
+  return lesson;
+}
+
+// ── Scenario runners ──────────────────────────────────────────────────────────
+
+async function runLagSpike() {
+  const s = getMeshState();
+  s.scenarioRunning = true;
+  toast("Scenario: Consumer Lag Spike starting…", "info");
+
+  setAgent("intake", { status: "acting" });
+  // REAL mode: publish SRE request to ops.requests.v1
+  kafkaProduce(TOPICS.REQUESTS, { requestId: uid(), requestType: "simulate-lag-spike", ts: Date.now() });
+  audit("publish", "intake", "Published to ops.requests.v1: simulate-lag-spike", null, "ops.requests.v1");
+  particle("e-req", "intake", "monitor");
+  await sleep(400);
+  setAgent("intake", { status: "online" });
+
+  s.broker.consumerGroups["payments-consumer"].lag = 24000;
+  s.broker.topics["ops.kafka.metrics.v1"].offsetHigh += 1;
+  broadcastState();
+
+  setMral("monitor");
+  setAgent("monitor", { status: "online", mralPhase: "monitor" });
+  audit("consume", "monitor", "Consuming metrics: lag=24000, rebalanceState=stable", null, "ops.kafka.metrics.v1");
+  particle("e-met", "intake", "monitor");
+  await sleep(700);
+
+  setMral("reason");
+  setAgent("monitor", { mralPhase: "reason", status: "reasoning" });
+  audit("reasoning", "monitor", "LLM reasoning step: cross-correlating broker, JVM, rebalance signals…");
+  await sleep(1200);
+
+  const reasoning = buildLagSpikeReasoning(s);
+  setAgent("monitor", { lastReasoning: reasoning });
+  audit("reasoning", "monitor", `Reasoning complete: ${reasoning.recommendedAction} (confidence ${reasoning.confidence})`, reasoning);
+
+  setMral("awaiting");
+  setAgent("monitor", { mralPhase: "awaiting", status: "awaiting-approval" });
+
+  const approvalId = uid();
+  const approval: ApprovalRequest = {
+    id: approvalId, ts: Date.now(), agent: "monitor",
+    toolCall: reasoning.proposedToolCall!, scenarioId: "lag-spike", status: "pending",
+  };
+  s.pendingApprovals.push(approval);
+  broadcastState();
+  toast("Policy gate: approval required for kafka.scaleConsumers", "warning");
+
+  const decision = await waitForApproval(approvalId);
+  if (decision === "reject") {
+    setMral("idle"); setAgent("monitor", { status: "online", mralPhase: "idle" });
+    s.scenarioRunning = false; toast("Action rejected — no mutation executed", "error"); return;
+  }
+
+  setMral("act");
+  setAgent("monitor", { mralPhase: "act", status: "acting" });
+  audit("tool-call", "monitor", "kafka.scaleConsumers: delta=2, group=payments-consumer", reasoning.proposedToolCall);
+  await sleep(800);
+
+  s.broker.consumerGroups["payments-consumer"].members += 2;
+  s.broker.consumerGroups["payments-consumer"].lag = 1200;
+
+  const action: ActionResult = {
+    approved: true, approvedBy: approval.approvedBy, outcome: "success",
+    detail: "Scaled payments-consumer from 3 → 5 replicas",
+    lagBefore: 24000, lagAfter: 1200,
+    toolCalled: "kafka.scaleConsumers",
+    clusterMutation: "oc scale deploy/payments-consumer --replicas=5",
+  };
+  setAgent("monitor", { lastAction: action });
+  audit("publish", "monitor", "Published to ops.incidents.v1", null, "ops.incidents.v1");
+  broadcastState();
+  toast("kafka.scaleConsumers executed — lag 24,000 → 1,200", "success");
+
+  await runWriter("lag-spike", "scale-consumers", 24000, 1200, approval.approvedBy);
+  const lesson = await runLearn("lag-spike", "scale-consumers", true, 24000, 1200);
+  await runNotification("lag-spike", "scale-consumers", 24000, 1200, approval.approvedBy, reasoning, action, lesson);
+  s.scenarioRunning = false;
+}
+
+async function runControllerFailover() {
+  const s = getMeshState();
+  s.scenarioRunning = true;
+  toast("Scenario: KRaft Controller Failover starting…", "info");
+
+  setAgent("intake", { status: "acting" });
+  // REAL mode: publish SRE request to ops.requests.v1
+  kafkaProduce(TOPICS.REQUESTS, { requestId: uid(), requestType: "simulate-controller-failover", ts: Date.now() });
+  audit("publish", "intake", "Published to ops.requests.v1: simulate-controller-failover", null, "ops.requests.v1");
+  particle("e-req", "intake", "monitor");
+  await sleep(400);
+  setAgent("intake", { status: "online" });
+
+  s.broker.controllerEpoch += 1;
+  broadcastState();
+
+  setMral("monitor");
+  setAgent("monitor", { mralPhase: "monitor", status: "online" });
+  audit("consume", "monitor", `KRaft epoch: ${s.broker.controllerEpoch - 1} → ${s.broker.controllerEpoch}`, null, "ops.kafka.metrics.v1");
+  particle("e-met", "intake", "monitor");
+  await sleep(600);
+
+  setMral("reason");
+  setAgent("monitor", { mralPhase: "reason", status: "reasoning" });
+  audit("reasoning", "monitor", "LLM reasoning: KRaft election in progress, checking broker health…");
+  await sleep(900);
+
+  const reasoning = buildFailoverReasoning(s);
+  setAgent("monitor", { lastReasoning: reasoning });
+  audit("reasoning", "monitor", `Reasoning: ${reasoning.recommendedAction} (confidence ${reasoning.confidence})`, reasoning);
+
+  setMral("act");
+  setAgent("monitor", { mralPhase: "act", status: "acting" });
+  audit("tool-call", "monitor", "kafka.ackControllerFailover — audit only, no mutation", reasoning.proposedToolCall);
+  await sleep(500);
+
+  const action: ActionResult = {
+    approved: true, outcome: "acked",
+    detail: `KRaft failover epoch ${s.broker.controllerEpoch - 1}→${s.broker.controllerEpoch} acked in 312ms. No page sent.`,
+    toolCalled: "kafka.ackControllerFailover",
+  };
+  setAgent("monitor", { lastAction: action });
+  broadcastState();
+  toast("KRaft failover acked — no page sent", "success");
+
+  await runWriter("controller-failover", "controller-failover-ack");
+  const lesson = await runLearn("controller-failover", "controller-failover-ack", true);
+  await runNotification("controller-failover", "controller-failover-ack", undefined, undefined, undefined, reasoning, action, lesson);
+  s.scenarioRunning = false;
+}
+
+async function runShareGroup() {
+  const s = getMeshState();
+  s.scenarioRunning = true;
+  toast("Scenario: Share Group Rebalance (KIP-932) starting…", "info");
+
+  setAgent("intake", { status: "acting" });
+  // REAL mode: publish SRE request to ops.requests.v1
+  kafkaProduce(TOPICS.REQUESTS, { requestId: uid(), requestType: "simulate-share-group", ts: Date.now() });
+  audit("publish", "intake", "Published to ops.requests.v1: simulate-share-group", null, "ops.requests.v1");
+  particle("e-req", "intake", "monitor");
+  await sleep(400);
+  setAgent("intake", { status: "online" });
+
+  s.broker.consumerGroups["share-group-1"].lag = 18000;
+  broadcastState();
+
+  setMral("monitor");
+  setAgent("monitor", { mralPhase: "monitor", status: "online" });
+  audit("consume", "monitor", "KIP-932 share-group signal: queue depth=18000", null, "ops.kafka.metrics.v1");
+  particle("e-met", "intake", "monitor");
+  await sleep(600);
+
+  setMral("reason");
+  setAgent("monitor", { mralPhase: "reason", status: "reasoning" });
+  audit("reasoning", "monitor", "LLM reasoning: KIP-932 share group checkpoint evaluation…");
+  await sleep(1000);
+
+  const reasoning = buildShareGroupReasoning(s);
+  setAgent("monitor", { lastReasoning: reasoning });
+  audit("reasoning", "monitor", `Reasoning: ${reasoning.recommendedAction} (confidence ${reasoning.confidence})`, reasoning);
+
+  setMral("awaiting");
+  setAgent("monitor", { mralPhase: "awaiting", status: "awaiting-approval" });
+  const approvalId = uid();
+  const approval: ApprovalRequest = {
+    id: approvalId, ts: Date.now(), agent: "monitor",
+    toolCall: reasoning.proposedToolCall!, scenarioId: "share-group", status: "pending",
+  };
+  s.pendingApprovals.push(approval);
+  broadcastState();
+  toast("Policy gate: approval required for kafka.checkpointShareGroup", "warning");
+
+  const decision = await waitForApproval(approvalId);
+  if (decision === "reject") {
+    setMral("idle"); setAgent("monitor", { status: "online", mralPhase: "idle" });
+    s.scenarioRunning = false; return;
+  }
+
+  setMral("act");
+  setAgent("monitor", { mralPhase: "act", status: "acting" });
+  audit("tool-call", "monitor", "kafka.checkpointShareGroup: delta=1, checkpoint=18000", reasoning.proposedToolCall);
+  await sleep(700);
+
+  s.broker.consumerGroups["share-group-1"].members += 1;
+  s.broker.consumerGroups["share-group-1"].lag = 2000;
+
+  const action: ActionResult = {
+    approved: true, approvedBy: approval.approvedBy, outcome: "success",
+    detail: "Share group checkpointed at offset 18000. Scaled share-group-1 2→3 consumers.",
+    lagBefore: 18000, lagAfter: 2000,
+    toolCalled: "kafka.checkpointShareGroup",
+    clusterMutation: "oc scale deploy/share-group-consumer --replicas=3",
+  };
+  setAgent("monitor", { lastAction: action });
+  broadcastState();
+  toast("Share group checkpointed — queue depth 18,000 → 2,000", "success");
+
+  await runWriter("share-group", "share-group-rebalance-ack", 18000, 2000, approval.approvedBy);
+  const lesson = await runLearn("share-group", "share-group-rebalance-ack", true, 18000, 2000);
+  await runNotification("share-group", "share-group-rebalance-ack", 18000, 2000, approval.approvedBy, reasoning, action, lesson);
+  s.scenarioRunning = false;
+}
+
+async function runBenignRebalance() {
+  const s = getMeshState();
+  s.scenarioRunning = true;
+  toast("Scenario: Benign Rebalance (KIP-848) starting…", "info");
+
+  setAgent("intake", { status: "acting" });
+  // REAL mode: publish SRE request to ops.requests.v1
+  kafkaProduce(TOPICS.REQUESTS, { requestId: uid(), requestType: "simulate-benign-rebalance", ts: Date.now() });
+  audit("publish", "intake", "Published to ops.requests.v1: simulate-benign-rebalance", null, "ops.requests.v1");
+  particle("e-req", "intake", "monitor");
+  await sleep(400);
+  setAgent("intake", { status: "online" });
+
+  s.broker.consumerGroups["payments-consumer"].lag = 16000;
+  s.broker.consumerGroups["payments-consumer"].rebalanceState = "preparing-rebalance";
+  broadcastState();
+
+  setMral("monitor");
+  setAgent("monitor", { mralPhase: "monitor", status: "online" });
+  audit("consume", "monitor", "Metrics: lag=16000, rebalanceState=preparing-rebalance (KIP-848)", null, "ops.kafka.metrics.v1");
+  particle("e-met", "intake", "monitor");
+  await sleep(600);
+
+  setMral("reason");
+  setAgent("monitor", { mralPhase: "reason", status: "reasoning" });
+  audit("reasoning", "monitor", "LLM reasoning: cross-referencing rebalance state against lag signal…");
+  await sleep(900);
+
+  const reasoning = buildBenignRebalanceReasoning(s);
+  setAgent("monitor", { lastReasoning: reasoning });
+  audit("reasoning", "monitor", `Reasoning: SUPPRESSED — ${reasoning.recommendedAction} (confidence ${reasoning.confidence})`, reasoning);
+
+  setMral("act");
+  setAgent("monitor", { mralPhase: "act", status: "acting" });
+  audit("tool-call", "monitor", "kafka.suppressRebalancePage: false-positive suppressed", reasoning.proposedToolCall);
+  await sleep(500);
+
+  s.broker.consumerGroups["payments-consumer"].rebalanceState = "stable";
+  s.broker.consumerGroups["payments-consumer"].lag = 0;
+
+  const action: ActionResult = {
+    approved: true, outcome: "suppressed",
+    detail: "Alert suppressed: lag rise during KIP-848 cooperative rebalance. No page sent.",
+    toolCalled: "kafka.suppressRebalancePage",
+  };
+  setAgent("monitor", { lastAction: action });
+  broadcastState();
+  toast("False-positive suppressed — KIP-848 rebalance context detected", "success");
+
+  const lesson = await runLearn("benign-rebalance", "rebalance-wait", true, 16000, 0);
+  await runNotification("benign-rebalance", "rebalance-wait", 16000, 0, undefined, reasoning, action, lesson);
+  s.scenarioRunning = false;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export function triggerScenario(id: "lag-spike" | "controller-failover" | "share-group" | "benign-rebalance") {
+  const s = getMeshState();
+  if (s.scenarioRunning) return { ok: false, reason: "scenario_already_running" };
+  switch (id) {
+    case "lag-spike":           runLagSpike().catch(console.error); break;
+    case "controller-failover": runControllerFailover().catch(console.error); break;
+    case "share-group":         runShareGroup().catch(console.error); break;
+    case "benign-rebalance":    runBenignRebalance().catch(console.error); break;
+  }
+  return { ok: true };
+}
+
+export function killAgent(agentId: AgentId) {
+  const s = getMeshState();
+  if (s.agents[agentId].status === "crashed") return { ok: false, reason: "already_crashed" };
+  setAgent(agentId, { status: "crashed", mralPhase: "idle" });
+  audit("agent-kill", "system", `Agent ${agentId} killed`, { agentId });
+  toast(`${s.agents[agentId].name} KILLED — incidents will queue on ops.incidents.v1`, "error");
+  return { ok: true };
+}
+
+export async function restartAgent(agentId: AgentId) {
+  const s = getMeshState();
+  if (s.agents[agentId].status !== "crashed") return { ok: false, reason: "not_crashed" };
+  setAgent(agentId, { status: "replaying" });
+  audit("agent-restart", "system", `Agent ${agentId} restarting`, { agentId });
+  toast(`${s.agents[agentId].name} restarting — replaying from last committed offset…`, "info");
+  const queue = [...s.incidentQueue];
+  s.incidentQueue = [];
+  broadcastState();
+  if (queue.length > 0) {
+    audit("replay-start", agentId, `Replaying ${queue.length} queued incidents`, { count: queue.length });
+    toast(`Replaying ${queue.length} queued incidents…`, "info");
+    for (const incident of queue as Array<{ scenarioId: string; actionTaken: string; lagBefore?: number; lagAfter?: number; approvedBy?: string }>) {
+      await sleep(600);
+      particle("e-inc", "monitor", "writer");
+      audit("consume", agentId, `Replaying incident: ${incident.scenarioId}`, incident, "ops.incidents.v1");
+    }
+    audit("replay-complete", agentId, `Replay complete — ${queue.length} incidents processed`, { count: queue.length });
+    toast(`Replay complete — ${queue.length} incidents processed. Zero data loss. ✓`, "success");
+  }
+  setAgent(agentId, { status: "online" });
+  broadcastState();
+  return { ok: true, replayed: queue.length };
+}
+
+export function resetMesh() {
+  globalThis.__agentMeshState = undefined;
+  getMeshState();
+  broadcastState();
+  toast("Mesh reset — all state cleared", "info");
+}
+
+export function getSnapshot() {
+  const s = getMeshState();
+  return {
+    agents: Object.values(s.agents), broker: s.broker,
+    mralPhase: s.globalMralPhase, pendingApprovals: s.pendingApprovals,
+    auditLog: s.auditLog, lessons: s.lessons, notifications: s.notifications,
+    incidentQueueDepth: s.incidentQueue.length, scenarioRunning: s.scenarioRunning,
+  };
+}

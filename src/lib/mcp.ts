@@ -1,170 +1,222 @@
-/**
- * MCP (Model Context Protocol) tool registry exposed by each agent.
- *
- * Each agent runs a small MCP server with typed tool definitions.
- * Infrastructure-affecting tool calls (scale-consumers, restart-agent) are
- * marked requiresApproval=true and route through the policy gate before
- * actually executing.
- */
+// MCP Tool Registry — typed tool catalogue with JSON Schema contracts and policy tags.
+// mesh.ts calls tools by name; this file is the authoritative source of truth for
+// what each tool accepts, returns, and whether it requires human approval.
 
-import type { AgentId, McpToolDefinition } from "./types";
+import type { AgentId } from "./types";
 
-export const MCP_TOOLS: McpToolDefinition[] = [
-  {
-    name: "intake.submitOpsRequest",
-    owner: "intake-agent",
-    description:
-      "Accept a new operator request and publish it to ops.requests.v1.",
-    inputSchema: {
-      type: "object",
-      required: ["kind"],
-      properties: {
-        kind: {
-          type: "string",
-          enum: [
-            "lag-spike",
-            "partition-imbalance",
-            "controller-failover",
-            "share-group-rebalance",
-          ],
-        },
-        actor: { type: "string" },
-        context: { type: "object", additionalProperties: true },
-      },
-    },
-    outputSchema: {
-      type: "object",
-      properties: {
-        requestId: { type: "string" },
-        accepted: { type: "boolean" },
-      },
-    },
-    requiresApproval: false,
-    policyTags: ["public-tool", "no-side-effects"],
-  },
+export interface MCPTool {
+  name:             string;
+  description:      string;
+  policyTags:       string[];
+  requiresApproval: boolean;
+  inputSchema:      object;
+  outputSchema:     object;
+}
 
+export const MCP_TOOLS: MCPTool[] = [
   {
     name: "kafka.scaleConsumers",
-    owner: "monitor-agent",
-    description:
-      "Scale a Kafka consumer group by N replicas via the Strimzi / Event Streams Kubernetes API. Routes through StrimziCluster CRD.",
+    description: "Scale a consumer group by adding replica instances to drain a lag backlog.",
+    policyTags: ["infra-mutation", "consumer-scaling", "human-gated"],
+    requiresApproval: true,
     inputSchema: {
       type: "object",
-      required: ["consumerGroup", "delta"],
+      required: ["group", "delta"],
       properties: {
-        consumerGroup: { type: "string" },
-        delta: { type: "integer", minimum: -10, maximum: 10 },
+        group:  { type: "string" },
+        delta:  { type: "integer", minimum: 1, maximum: 5 },
         reason: { type: "string" },
       },
     },
     outputSchema: {
       type: "object",
       properties: {
-        before: { type: "integer" },
-        after: { type: "integer" },
-        durationMs: { type: "integer" },
+        previousReplicas: { type: "integer" },
+        newReplicas:      { type: "integer" },
+        lagBefore:        { type: "integer" },
+        lagAfter:         { type: "integer" },
+        clusterMutation:  { type: "string" },
       },
     },
-    requiresApproval: true,
-    policyTags: ["infra-mutating", "policy-gated", "audit-required", "least-privilege"],
   },
-
   {
-    name: "kafka.acknowledgeFailover",
-    owner: "monitor-agent",
-    description:
-      "Acknowledge a KRaft controller leadership change. No-op remediation; just records the event in the audit topic so paging humans is suppressed.",
-    inputSchema: {
-      type: "object",
-      required: ["fromController", "toController", "epoch"],
-      properties: {
-        fromController: { type: "integer" },
-        toController: { type: "integer" },
-        epoch: { type: "integer" },
-      },
-    },
-    outputSchema: { type: "object", properties: { acknowledged: { type: "boolean" } } },
+    name: "kafka.ackControllerFailover",
+    description: "Acknowledge a KRaft controller leadership change — audit only, no infra mutation.",
+    policyTags: ["read-only", "audit"],
     requiresApproval: false,
-    policyTags: ["read-only-action", "audit-required"],
-  },
-
-  {
-    name: "kafka.shareGroupCheckpoint",
-    owner: "monitor-agent",
-    description:
-      "Force a checkpoint on a KIP-932 share group. Used during share-group rebalance scenarios.",
     inputSchema: {
       type: "object",
-      required: ["shareGroup"],
-      properties: { shareGroup: { type: "string" } },
-    },
-    outputSchema: { type: "object", properties: { checkpointed: { type: "boolean" } } },
-    requiresApproval: true,
-    policyTags: ["infra-mutating", "policy-gated", "kip-932"],
-  },
-
-  {
-    name: "writer.draftIncidentReport",
-    owner: "writer-agent",
-    description:
-      "Generate a structured post-incident report (Markdown) from an Incident record.",
-    inputSchema: {
-      type: "object",
-      required: ["incidentId"],
-      properties: { incidentId: { type: "string" } },
+      required: ["previousEpoch", "newEpoch"],
+      properties: {
+        previousEpoch:      { type: "integer" },
+        newEpoch:           { type: "integer" },
+        electionDurationMs: { type: "integer" },
+      },
     },
     outputSchema: {
       type: "object",
       properties: {
-        markdown: { type: "string" },
-        wordCount: { type: "integer" },
+        acked:   { type: "boolean" },
+        auditId: { type: "string" },
       },
     },
-    requiresApproval: false,
-    policyTags: ["read-only-action"],
   },
-
   {
-    name: "notify.slack",
-    owner: "notification-agent",
-    description: "Post the incident summary to a Slack channel.",
+    name: "kafka.checkpointShareGroup",
+    description: "Checkpoint a KIP-932 share group and optionally scale consumers.",
+    policyTags: ["infra-mutation", "share-group", "human-gated"],
+    requiresApproval: true,
     inputSchema: {
       type: "object",
-      required: ["channel", "title", "body"],
+      required: ["shareGroupId"],
       properties: {
-        channel: { type: "string" },
-        title: { type: "string" },
-        body: { type: "string" },
+        shareGroupId:      { type: "string" },
+        delta:             { type: "integer" },
+        checkpointOffset:  { type: "integer" },
       },
     },
-    outputSchema: { type: "object", properties: { messageTs: { type: "string" } } },
-    requiresApproval: false,
-    policyTags: ["egress-external", "audit-required"],
+    outputSchema: {
+      type: "object",
+      properties: {
+        checkpointed:    { type: "boolean" },
+        scaledBy:        { type: "integer" },
+        offsetCommitted: { type: "integer" },
+      },
+    },
   },
-
   {
-    name: "itsm.openTicket",
-    owner: "notification-agent",
-    description: "Open an ITSM ticket (ServiceNow) with the incident report attached.",
+    name: "kafka.suppressRebalancePage",
+    description: "Suppress an alert page when a cooperative KIP-848 rebalance is in progress.",
+    policyTags: ["read-only", "suppression", "audit"],
+    requiresApproval: false,
     inputSchema: {
       type: "object",
-      required: ["title", "summary", "severity"],
+      required: ["consumerGroup", "rebalanceState"],
       properties: {
-        title: { type: "string" },
-        summary: { type: "string" },
-        severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        consumerGroup:  { type: "string" },
+        rebalanceState: { type: "string" },
+        lagObserved:    { type: "integer" },
       },
     },
-    outputSchema: { type: "object", properties: { ticketId: { type: "string" } } },
+    outputSchema: {
+      type: "object",
+      properties: {
+        suppressed: { type: "boolean" },
+        rationale:  { type: "string" },
+      },
+    },
+  },
+  {
+    name: "sre.draftIncidentReport",
+    description: "Draft a structured post-incident markdown report from an audit event.",
+    policyTags: ["write", "incident-management"],
     requiresApproval: false,
-    policyTags: ["egress-external", "audit-required"],
+    inputSchema: {
+      type: "object",
+      required: ["incidentId", "actionTaken"],
+      properties: {
+        incidentId:  { type: "string" },
+        actionTaken: { type: "string" },
+        lagBefore:   { type: "integer" },
+        lagAfter:    { type: "integer" },
+        approvedBy:  { type: "string" },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        reportMarkdown: { type: "string" },
+        wordCount:      { type: "integer" },
+      },
+    },
+  },
+  {
+    name: "sre.notifySlack",
+    description: "Post a structured notification to the #sre-alerts Slack channel.",
+    policyTags: ["outbound", "notification"],
+    requiresApproval: false,
+    inputSchema: {
+      type: "object",
+      required: ["channel", "message"],
+      properties: {
+        channel:  { type: "string" },
+        message:  { type: "string" },
+        severity: { type: "string" },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        messageTs: { type: "string" },
+        channelId: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "sre.openITSMTicket",
+    description: "Open a ServiceNow / ITSM ticket for a resolved incident.",
+    policyTags: ["outbound", "itsm", "compliance"],
+    requiresApproval: false,
+    inputSchema: {
+      type: "object",
+      required: ["title", "description", "severity"],
+      properties: {
+        title:           { type: "string" },
+        description:     { type: "string" },
+        severity:        { type: "string" },
+        assignmentGroup: { type: "string" },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        ticketId: { type: "string" },
+        url:      { type: "string" },
+      },
+    },
+  },
+  {
+    name: "sre.sendEmailSummary",
+    description: "Send a full MRAL trace summary email after each scenario run.",
+    policyTags: ["outbound", "email", "notification"],
+    requiresApproval: false,
+    inputSchema: {
+      type: "object",
+      required: ["scenarioId", "recipient"],
+      properties: {
+        scenarioId: { type: "string" },
+        recipient:  { type: "string", format: "email" },
+        reasoning:  { type: "object" },
+        action:     { type: "object" },
+        lesson:     { type: "object" },
+      },
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        ok:        { type: "boolean" },
+        messageId: { type: "string" },
+        error:     { type: "string" },
+      },
+    },
   },
 ];
 
-export function getToolsForAgent(agent: AgentId): McpToolDefinition[] {
-  return MCP_TOOLS.filter((t) => t.owner === agent);
-}
+// Per-agent tool binding — enforces least-privilege access.
+// An agent can only call the tools listed here, regardless of what mesh.ts requests.
+export const AGENT_TOOLS: Record<AgentId, string[]> = {
+  intake:       ["kafka.scaleConsumers", "kafka.checkpointShareGroup"],
+  monitor:      ["kafka.scaleConsumers", "kafka.ackControllerFailover",
+                 "kafka.checkpointShareGroup", "kafka.suppressRebalancePage",
+                 "sre.draftIncidentReport"],
+  writer:       ["sre.draftIncidentReport", "sre.sendEmailSummary"],
+  notification: ["sre.notifySlack", "sre.openITSMTicket", "sre.sendEmailSummary"],
+};
 
-export function findTool(name: string): McpToolDefinition | undefined {
-  return MCP_TOOLS.find((t) => t.name === name);
+// Convenience lookup by tool name.
+export const MCP_TOOL_MAP = new Map(MCP_TOOLS.map((t) => [t.name, t]));
+
+/** Return true if the given agent is allowed to call the named tool. */
+export function agentCanCall(agentId: AgentId, toolName: string): boolean {
+  return (AGENT_TOOLS[agentId] ?? []).includes(toolName);
 }

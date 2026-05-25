@@ -1,170 +1,20 @@
-/**
- * Core types for the Agent Mesh on Streaming World demo.
- *
- * These types model the key abstractions called out in the API Days proposal:
- *  - Kafka topics (channels), partitions, offsets
- *  - Agents with MCP tool definitions
- *  - Reasoning steps (Monitor -> Reason -> Act -> Learn)
- *  - Policy gates (human-in-the-loop)
- *  - AsyncAPI 3.0 channel contracts
- */
+// ── Core domain types for the Agent Mesh SRE runtime ─────────────────────────
 
-export type AgentId =
-  | "intake-agent"
-  | "monitor-agent"
-  | "writer-agent"
-  | "notification-agent";
+export type AgentId = "intake" | "monitor" | "writer" | "notification";
+
+export type MralPhase = "idle" | "monitor" | "reason" | "awaiting" | "act" | "learn" | "replaying";
 
 export type AgentStatus =
   | "online"
-  | "starting"
   | "reasoning"
   | "acting"
-  | "learning"
   | "awaiting-approval"
   | "crashed"
-  | "replaying"
-  | "offline";
+  | "replaying";
 
-export type TopicName =
-  | "ops.requests.v1"
-  | "ops.kafka.metrics.v1"
-  | "ops.incidents.v1"
-  | "ops.actions.audit.v1"
-  | "ops.lessons.v1"
-  | "ops.notifications.v1";
+// ── MCP tool call (JSON-RPC 2.0) ──────────────────────────────────────────────
 
-export interface KafkaRecord<T = unknown> {
-  topic: TopicName;
-  partition: number;
-  offset: number;
-  key: string;
-  timestamp: number;
-  headers: Record<string, string>;
-  value: T;
-}
-
-export interface AgentDefinition {
-  id: AgentId;
-  name: string;
-  role: string;
-  description: string;
-  /** Topics this agent reads from. */
-  consumes: TopicName[];
-  /** Topics this agent publishes to. */
-  produces: TopicName[];
-  /** MCP tool names this agent exposes. */
-  tools: string[];
-  /** Position on the React Flow canvas. */
-  position: { x: number; y: number };
-  /** Subtitle shown on the node. */
-  subtitle: string;
-  /** Tailwind accent class for the node. */
-  accent: "cyan" | "violet" | "emerald" | "amber" | "rose";
-}
-
-export interface AgentRuntimeState {
-  status: AgentStatus;
-  consumerLag: Record<string, number>;
-  committedOffsets: Record<string, number>;
-  inflight: number;
-  processed: number;
-  /** True between kill() and restart(). */
-  killed: boolean;
-  /** Last "reasoning" output (for Monitor agent). */
-  lastReasoning?: ReasoningOutput;
-  /** Last action result. */
-  lastAction?: ActionResult;
-  startedAt: number;
-}
-
-/* ------------------------------------------------------------------ */
-/* Monitor -> Reason -> Act -> Learn                                  */
-/* ------------------------------------------------------------------ */
-
-export interface MetricsSignal {
-  brokerId: number;
-  topic: string;
-  partition: number;
-  consumerGroup: string;
-  lagMessages: number;
-  isrCount: number;
-  rebalanceState:
-    | "stable"
-    | "preparing-rebalance"
-    | "completing-rebalance"
-    | "share-group-assigning";
-  controllerEpoch: number;
-  jvmHeapPercent: number;
-  podCpuPercent: number;
-  /** Indicates which Kafka 4.x KIP this signal exercises. */
-  kafkaFeature: "KRaft" | "KIP-848" | "KIP-932" | "classic";
-  noteForOperators?: string;
-}
-
-export interface ReasoningInput {
-  signal: MetricsSignal;
-  /** Last few entries from ops.lessons.v1 — seeds the prompt. */
-  recentLessons: LessonRecord[];
-}
-
-export interface ReasoningOutput {
-  rootCause: string;
-  confidence: number; // 0..1
-  recommendedAction:
-    | "scale-consumers"
-    | "rebalance-wait"
-    | "controller-failover-ack"
-    | "share-group-rebalance-ack"
-    | "noop";
-  rationale: string;
-  requiresApproval: boolean;
-  proposedToolCall: McpToolCall;
-  /** Which Kafka 4.x feature was relevant. */
-  kafkaFeatureCited: "KRaft" | "KIP-848" | "KIP-932" | "classic";
-}
-
-export interface ActionResult {
-  toolCall: McpToolCall;
-  approved: boolean;
-  approvedBy?: string;
-  executedAt: number;
-  outcome: "success" | "noop" | "rejected" | "failed";
-  detail: string;
-  lagBefore?: number;
-  lagAfter?: number;
-}
-
-export interface LessonRecord {
-  id: string;
-  ts: number;
-  scenario: string;
-  actionTaken: string;
-  effective: boolean;
-  lagBefore: number;
-  lagAfter: number;
-  adjustedThreshold?: number;
-  notes: string;
-}
-
-/* ------------------------------------------------------------------ */
-/* MCP                                                                */
-/* ------------------------------------------------------------------ */
-
-export interface McpToolDefinition {
-  name: string;
-  /** Owning agent that hosts this tool. */
-  owner: AgentId;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  outputSchema: Record<string, unknown>;
-  /** When true, calling this tool requires a policy approval gate. */
-  requiresApproval: boolean;
-  /** Free-form security tags rendered in the inspector. */
-  policyTags: string[];
-}
-
-export interface McpToolCall {
+export interface MCPToolCall {
   jsonrpc: "2.0";
   id: string;
   method: "tools/call";
@@ -174,110 +24,166 @@ export interface McpToolCall {
   };
 }
 
+// ── Reasoning output from LLM step ───────────────────────────────────────────
+
+export interface ReasoningOutput {
+  rootCause: string;
+  confidence: number;
+  kafkaFeatureCited: string;
+  rebalanceState: string;
+  controllerEpoch: number;
+  crossCorrelation: {
+    brokers: string;
+    jvmHeap: string;
+    networkInRate: string;
+    rebalanceInProgress: boolean;
+  };
+  recommendedAction: string;
+  requiresApproval: boolean;
+  rationale: string;
+  proposedToolCall?: MCPToolCall;
+  lessonsCited: string[];
+}
+
+// ── Result of an executed action ──────────────────────────────────────────────
+
+export interface ActionResult {
+  approved: boolean;
+  approvedBy?: string;
+  outcome: "success" | "acked" | "suppressed" | "rejected";
+  detail: string;
+  lagBefore?: number;
+  lagAfter?: number;
+  toolCalled: string;
+  clusterMutation?: string;
+}
+
+// ── Agent state ───────────────────────────────────────────────────────────────
+
+export interface AgentState {
+  id: AgentId;
+  name: string;
+  role: string;
+  status: AgentStatus;
+  mralPhase: MralPhase;
+  color: string;
+  lastReasoning: ReasoningOutput | null;
+  lastAction: ActionResult | null;
+  lastLesson: LessonRecord | null;
+  consumerOffset: Record<string, number>;
+}
+
+// ── Kafka broker / topic telemetry ────────────────────────────────────────────
+
+export interface TopicState {
+  partitions: number;
+  lag: number;
+  offsetHigh: number;
+}
+
+export interface ConsumerGroupState {
+  lag: number;
+  rebalanceState: string;
+  members: number;
+}
+
+export interface BrokerState {
+  mode: "MOCK" | "REAL";
+  controllerEpoch: number;
+  brokersOnline: number;
+  mtls: boolean;
+  sasl: boolean;
+  aclCount: number;
+  topics: Record<string, TopicState>;
+  consumerGroups: Record<string, ConsumerGroupState>;
+}
+
+// ── Human-in-the-loop approval gate ──────────────────────────────────────────
+
 export interface ApprovalRequest {
-  id: string;
-  createdAt: number;
-  toolCall: McpToolCall;
-  reason: string;
-  proposedBy: AgentId;
-  riskLevel: "low" | "medium" | "high";
-  status: "pending" | "approved" | "rejected" | "expired";
-  decidedAt?: number;
-  decidedBy?: string;
-}
-
-/* ------------------------------------------------------------------ */
-/* Incidents / audit                                                  */
-/* ------------------------------------------------------------------ */
-
-export interface IncidentEvent {
-  id: string;
-  ts: number;
-  severity: "low" | "medium" | "high" | "critical";
-  title: string;
-  summary: string;
-  signal: MetricsSignal;
-  reasoning: ReasoningOutput;
-  action?: ActionResult;
-}
-
-export interface AuditEvent {
   id: string;
   ts: number;
   agent: AgentId;
-  kind:
-    | "tool-call"
-    | "approval-decision"
-    | "publish"
-    | "consume"
-    | "commit-offset"
-    | "agent-kill"
-    | "agent-restart"
-    | "replay-start"
-    | "replay-complete";
-  detail: string;
-  meta?: Record<string, unknown>;
+  toolCall: MCPToolCall;
+  scenarioId: string;
+  status: "pending" | "approved" | "rejected";
+  approvedBy?: string;
 }
 
-export interface NotificationEvent {
+// ── Audit log record ──────────────────────────────────────────────────────────
+
+export type AuditRecordType =
+  | "publish"
+  | "consume"
+  | "reasoning"
+  | "tool-call"
+  | "approval"
+  | "lesson"
+  | "notification"
+  | "agent-kill"
+  | "agent-restart"
+  | "replay-start"
+  | "replay-complete";
+
+export interface AuditRecord {
+  id: string;
+  ts: number;
+  type: AuditRecordType;
+  agent: AgentId | "system";
+  summary: string;
+  detail?: unknown;
+  topic?: string;
+}
+
+// ── Lesson record (Learn phase) ───────────────────────────────────────────────
+
+export interface LessonRecord {
+  id: string;
+  ts: number;
+  scenarioId: string;
+  actionTaken: string;
+  effective: boolean;
+  lagBefore?: number;
+  lagAfter?: number;
+  adjustedThreshold?: number;
+  notes: string;
+}
+
+// ── Notification record ───────────────────────────────────────────────────────
+
+export interface NotificationRecord {
   id: string;
   ts: number;
   channel: "slack" | "itsm" | "email";
-  title: string;
-  body: string;
-  link?: string;
+  message: string;
+  scenarioId: string;
+  ticketId?: string;
 }
 
-/* ------------------------------------------------------------------ */
-/* SSE wire format                                                    */
-/* ------------------------------------------------------------------ */
+// ── SSE event bus message shapes ─────────────────────────────────────────────
 
-export type WireEvent =
-  | { kind: "snapshot"; payload: SnapshotPayload }
-  | { kind: "topic-record"; payload: KafkaRecord<unknown> }
-  | { kind: "agent-state"; payload: { agent: AgentId; state: AgentRuntimeState } }
-  | { kind: "approval-new"; payload: ApprovalRequest }
-  | { kind: "approval-update"; payload: ApprovalRequest }
-  | { kind: "incident"; payload: IncidentEvent }
-  | { kind: "audit"; payload: AuditEvent }
-  | { kind: "notification"; payload: NotificationEvent }
-  | { kind: "lesson"; payload: LessonRecord }
-  | { kind: "particle"; payload: ParticleHint }
-  | { kind: "log"; payload: { ts: number; agent: AgentId | "system"; level: "info" | "warn" | "error"; message: string } };
+export type BusEvent =
+  | { type: "state"; agents: AgentState[]; mralPhase: MralPhase; broker: BrokerState; pendingApprovals: ApprovalRequest[]; incidentQueueDepth: number }
+  | { type: "audit"; record: AuditRecord }
+  | { type: "particle"; edgeId: string; fromNode: string; toNode: string }
+  | { type: "toast"; message: string; kind: "info" | "success" | "warning" | "error" }
+  | { type: "notification"; record: NotificationRecord }
+  | { type: "lesson"; record: LessonRecord };
 
-/** Tells the canvas to fly an animated particle along an edge. */
-export interface ParticleHint {
-  id: string;
-  source: AgentId;
-  target: AgentId;
-  topic: TopicName;
-  color: "cyan" | "violet" | "emerald" | "amber" | "rose" | "red";
-  durationMs: number;
+// ── Email summary payload ─────────────────────────────────────────────────────
+
+export interface AgentSummaryPayload {
+  scenarioId: string;
+  scenarioLabel: string;
+  ts: number;
+  reasoning: ReasoningOutput | null;
+  action: ActionResult | null;
+  lesson: LessonRecord | null;
+  slackMessage: string;
+  itsmTicket: string;
+  approvedBy: string | null;
 }
 
-export interface SnapshotPayload {
-  agents: Record<AgentId, AgentRuntimeState>;
-  approvals: ApprovalRequest[];
-  incidents: IncidentEvent[];
-  audit: AuditEvent[];
-  notifications: NotificationEvent[];
-  lessons: LessonRecord[];
-  topics: Record<
-    TopicName,
-    { partitions: number; logEndOffset: number; recentRecords: KafkaRecord[] }
-  >;
-  cluster: ClusterStatus;
-}
-
-export interface ClusterStatus {
-  mode: "KRaft";
-  controllerId: number;
-  controllerEpoch: number;
-  brokers: { id: number; rack: string; status: "online" | "offline" }[];
-  schemaRegistry: { connected: boolean; specs: number };
-  security: {
-    mTLS: boolean;
-    saslScram: boolean;
-    aclsActive: number;
-  };
-}
+export type EmailResult =
+  | { ok: true; messageId: string }
+  | { ok: false; error: string };

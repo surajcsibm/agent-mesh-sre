@@ -1,42 +1,43 @@
-/**
- * Tiny pub-sub used by the in-process simulation to fan out events to all
- * connected SSE clients. Stored on globalThis so it survives Next.js HMR.
- */
-import type { WireEvent } from "./types";
+// Server-side SSE event bus — globalThis singleton (survives Next.js hot reload)
+// Clients connect via GET /api/mesh/stream and receive newline-delimited JSON.
 
-type Listener = (e: WireEvent) => void;
+import type { BusEvent } from "./types";
 
-class EventBus {
-  private listeners: Set<Listener> = new Set();
+type Subscriber = (event: BusEvent) => void;
 
-  subscribe(fn: Listener): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
-
-  publish(e: WireEvent): void {
-    for (const l of this.listeners) {
-      try {
-        l(e);
-      } catch {
-        // ignore listener errors
-      }
-    }
-  }
-
-  size(): number {
-    return this.listeners.size;
-  }
+interface EventBus {
+  subscribe: (fn: Subscriber) => () => void;
+  publish: (event: BusEvent) => void;
+  subscriberCount: () => number;
 }
 
 declare global {
-  // eslint-disable-next-line no-var
-  var __agentMeshBus: EventBus | undefined;
+  var __agentEventBus: EventBus | undefined;
 }
 
-export function getEventBus(): EventBus {
-  if (!globalThis.__agentMeshBus) {
-    globalThis.__agentMeshBus = new EventBus();
-  }
-  return globalThis.__agentMeshBus;
+function createEventBus(): EventBus {
+  const subscribers = new Set<Subscriber>();
+
+  return {
+    subscribe(fn: Subscriber) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+
+    publish(event: BusEvent) {
+      subscribers.forEach((fn) => {
+        try { fn(event); } catch { /* subscriber disconnected */ }
+      });
+    },
+
+    subscriberCount() {
+      return subscribers.size;
+    },
+  };
 }
+
+if (!globalThis.__agentEventBus) {
+  globalThis.__agentEventBus = createEventBus();
+}
+
+export const eventBus: EventBus = globalThis.__agentEventBus;

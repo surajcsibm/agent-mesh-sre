@@ -1,0 +1,457 @@
+asyncapi: 3.0.0
+
+info:
+  title: Agent Mesh SRE — Kafka Topic Catalog
+  version: 1.0.0
+  description: |
+    AsyncAPI 3.0 specification for the Agent Mesh SRE system demonstrated at
+    APIdays India 2026 (Bangalore, August 18–19).
+
+    The mesh runs four AI agents (Intake, Monitor, Writer, Notification) that
+    communicate exclusively via Kafka topics. The Monitor agent executes a
+    continuous Monitor → Reason → Act → Learn (MRAL) loop, citing Kafka 3.x
+    features (KRaft, KIP-848, KIP-932) in its reasoning output.
+
+    All topics follow the ops.<domain>.<entity>.v<N> naming convention.
+    Schema evolution uses Confluent Schema Registry with BACKWARD compatibility.
+  contact:
+    name: Suraj C S
+    email: surajcs@gmail.com
+  license:
+    name: MIT
+
+# ── Servers ───────────────────────────────────────────────────────────────────
+
+servers:
+  confluent-cloud:
+    host: pkc-xxxxx.us-east-1.aws.confluent.cloud:9092
+    protocol: kafka-secure
+    description: |
+      Confluent Cloud cluster (AWS us-east-1). Replace host with your actual
+      bootstrap server from Cluster Settings → Endpoints.
+    security:
+      - $ref: "#/components/securitySchemes/confluentSaslPlain"
+    bindings:
+      kafka:
+        schemaRegistryUrl: https://psrc-xxxxx.us-east-1.aws.confluent.cloud
+        schemaRegistryVendor: confluent
+
+  local-dev:
+    host: localhost:9092
+    protocol: kafka
+    description: Local Kafka broker for development (e.g. via Docker Compose).
+
+# ── Channels ──────────────────────────────────────────────────────────────────
+
+channels:
+
+  ops.requests.v1:
+    address: ops.requests.v1
+    description: |
+      Intake Agent publishes user-initiated SRE requests here.
+      Monitor Agent subscribes as consumer group agent-mesh-sre-monitor.
+    bindings:
+      kafka:
+        partitions: 6
+        replicas: 3
+        configs:
+          retention.ms: "604800000"    # 7 days
+          cleanup.policy: delete
+    messages:
+      SreRequest:
+        $ref: "#/components/messages/SreRequest"
+
+  ops.kafka.metrics.v1:
+    address: ops.kafka.metrics.v1
+    description: |
+      Kafka broker and consumer-group telemetry feed.
+      Monitor Agent reads continuously (MONITOR phase of MRAL loop).
+      In REAL mode, populated by a Kafka metrics exporter or Confluent Cloud Metrics API.
+    bindings:
+      kafka:
+        partitions: 6
+        replicas: 3
+        configs:
+          retention.ms: "86400000"     # 1 day
+          cleanup.policy: delete
+    messages:
+      MetricsSignal:
+        $ref: "#/components/messages/MetricsSignal"
+
+  ops.incidents.v1:
+    address: ops.incidents.v1
+    description: |
+      Monitor Agent publishes resolved or in-progress incident records.
+      Writer Agent consumes and drafts post-incident markdown reports.
+      If Writer is crashed, incidents queue here for replay on restart.
+    bindings:
+      kafka:
+        partitions: 6
+        replicas: 3
+        configs:
+          retention.ms: "2592000000"   # 30 days
+          cleanup.policy: compact,delete
+    messages:
+      IncidentRecord:
+        $ref: "#/components/messages/IncidentRecord"
+
+  ops.actions.audit.v1:
+    address: ops.actions.audit.v1
+    description: |
+      Compliance-grade audit trail. Every agent decision, tool call, approval,
+      kill, restart, replay, reasoning output, lesson and notification is written
+      here. Notification Agent consumes and routes to Slack / ITSM / email.
+      365-day retention — never truncated.
+    bindings:
+      kafka:
+        partitions: 12
+        replicas: 3
+        configs:
+          retention.ms: "31536000000"  # 365 days
+          cleanup.policy: compact,delete
+    messages:
+      AuditRecord:
+        $ref: "#/components/messages/AuditRecord"
+
+  ops.lessons.v1:
+    address: ops.lessons.v1
+    description: |
+      LEARN channel — Monitor Agent publishes outcome-based lesson records after
+      each scenario. Future reasoning prompts cite the last 3 lessons to improve
+      threshold and action decisions (closed-loop learning).
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 3
+        configs:
+          retention.ms: "-1"           # indefinite
+          cleanup.policy: compact
+    messages:
+      LessonRecord:
+        $ref: "#/components/messages/LessonRecord"
+
+  ops.notifications.v1:
+    address: ops.notifications.v1
+    description: |
+      Notification Agent publishes outbound notification records (Slack, ITSM,
+      email) after routing. Consumers can build notification dashboards or
+      feed into observability pipelines.
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 3
+        configs:
+          retention.ms: "604800000"    # 7 days
+          cleanup.policy: delete
+    messages:
+      NotificationRecord:
+        $ref: "#/components/messages/NotificationRecord"
+
+  demo.payments.events:
+    address: demo.payments.events
+    description: |
+      High-throughput synthetic payments event stream used to simulate consumer
+      lag scenarios. 24 partitions allow realistic consumer-group rebalancing
+      demonstrations (KIP-848 / KIP-932).
+    bindings:
+      kafka:
+        partitions: 24
+        replicas: 3
+        configs:
+          retention.ms: "259200000"    # 3 days
+          cleanup.policy: delete
+    messages:
+      PaymentEvent:
+        $ref: "#/components/messages/PaymentEvent"
+
+# ── Operations ────────────────────────────────────────────────────────────────
+
+operations:
+
+  # Intake Agent
+  intake/publishRequest:
+    action: send
+    channel:
+      $ref: "#/channels/ops.requests.v1"
+    description: Intake Agent publishes structured SRE requests received via MCP.
+    bindings:
+      kafka:
+        groupId: agent-mesh-sre-intake
+        clientId: intake-agent
+    messages:
+      - $ref: "#/channels/ops.requests.v1/messages/SreRequest"
+
+  # Monitor Agent — consume
+  monitor/consumeMetrics:
+    action: receive
+    channel:
+      $ref: "#/channels/ops.kafka.metrics.v1"
+    description: Monitor Agent reads telemetry for the MONITOR phase of the MRAL loop.
+    bindings:
+      kafka:
+        groupId: agent-mesh-sre-monitor
+        clientId: monitor-agent
+    messages:
+      - $ref: "#/channels/ops.kafka.metrics.v1/messages/MetricsSignal"
+
+  monitor/consumeRequest:
+    action: receive
+    channel:
+      $ref: "#/channels/ops.requests.v1"
+    description: Monitor Agent receives SRE requests from the Intake Agent.
+    bindings:
+      kafka:
+        groupId: agent-mesh-sre-monitor
+        clientId: monitor-agent
+    messages:
+      - $ref: "#/channels/ops.requests.v1/messages/SreRequest"
+
+  # Monitor Agent — produce
+  monitor/publishIncident:
+    action: send
+    channel:
+      $ref: "#/channels/ops.incidents.v1"
+    description: Monitor Agent publishes incident records after ACT phase completes.
+    messages:
+      - $ref: "#/channels/ops.incidents.v1/messages/IncidentRecord"
+
+  monitor/publishAudit:
+    action: send
+    channel:
+      $ref: "#/channels/ops.actions.audit.v1"
+    description: Monitor Agent writes every reasoning output, tool call, and approval to the audit log.
+    messages:
+      - $ref: "#/channels/ops.actions.audit.v1/messages/AuditRecord"
+
+  monitor/publishLesson:
+    action: send
+    channel:
+      $ref: "#/channels/ops.lessons.v1"
+    description: Monitor Agent publishes lesson records in the LEARN phase.
+    messages:
+      - $ref: "#/channels/ops.lessons.v1/messages/LessonRecord"
+
+  monitor/consumeLesson:
+    action: receive
+    channel:
+      $ref: "#/channels/ops.lessons.v1"
+    description: Monitor Agent reads prior lessons to inform future reasoning prompts (closed loop).
+    bindings:
+      kafka:
+        groupId: agent-mesh-sre-monitor
+    messages:
+      - $ref: "#/channels/ops.lessons.v1/messages/LessonRecord"
+
+  # Writer Agent
+  writer/consumeIncident:
+    action: receive
+    channel:
+      $ref: "#/channels/ops.incidents.v1"
+    description: Writer Agent consumes incidents and drafts post-incident reports. Supports replay on restart.
+    bindings:
+      kafka:
+        groupId: agent-mesh-sre-writer
+        clientId: writer-agent
+    messages:
+      - $ref: "#/channels/ops.incidents.v1/messages/IncidentRecord"
+
+  writer/publishAudit:
+    action: send
+    channel:
+      $ref: "#/channels/ops.actions.audit.v1"
+    description: Writer Agent publishes audit records after drafting reports.
+    messages:
+      - $ref: "#/channels/ops.actions.audit.v1/messages/AuditRecord"
+
+  # Notification Agent
+  notification/consumeAudit:
+    action: receive
+    channel:
+      $ref: "#/channels/ops.actions.audit.v1"
+    description: Notification Agent consumes audit events and routes to Slack, ITSM, and email.
+    bindings:
+      kafka:
+        groupId: agent-mesh-sre-notification
+        clientId: notification-agent
+    messages:
+      - $ref: "#/channels/ops.actions.audit.v1/messages/AuditRecord"
+
+  notification/publishNotification:
+    action: send
+    channel:
+      $ref: "#/channels/ops.notifications.v1"
+    description: Notification Agent records all outbound notifications.
+    messages:
+      - $ref: "#/channels/ops.notifications.v1/messages/NotificationRecord"
+
+# ── Components ────────────────────────────────────────────────────────────────
+
+components:
+
+  messages:
+
+    SreRequest:
+      name: SreRequest
+      title: SRE Request
+      summary: User-initiated SRE request published by Intake Agent.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/SreRequest"
+
+    MetricsSignal:
+      name: MetricsSignal
+      title: Kafka Metrics Signal
+      summary: Cross-signal telemetry snapshot for Monitor Agent reasoning.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/MetricsSignal"
+
+    IncidentRecord:
+      name: IncidentRecord
+      title: Incident Record
+      summary: Resolved or in-progress incident published after ACT phase.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/IncidentRecord"
+
+    AuditRecord:
+      name: AuditRecord
+      title: Audit Record
+      summary: Durable, replayable record for every significant mesh event.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/AuditRecord"
+
+    LessonRecord:
+      name: LessonRecord
+      title: Lesson Record
+      summary: Outcome-based learning record. Future reasoning cites last 3 lessons.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/LessonRecord"
+
+    NotificationRecord:
+      name: NotificationRecord
+      title: Notification Record
+      summary: Outbound notification dispatched by Notification Agent.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/NotificationRecord"
+
+    PaymentEvent:
+      name: PaymentEvent
+      title: Payment Event
+      summary: Synthetic payment event used to drive consumer lag simulations.
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/PaymentEvent"
+
+  schemas:
+
+    SreRequest:
+      type: object
+      required: [requestId, requestType, ts]
+      properties:
+        requestId:   { type: string, format: uuid, description: Unique request identifier }
+        requestType: { type: string, description: "e.g. simulate-lag-spike, simulate-controller-failover" }
+        ts:          { type: integer, format: int64, description: Unix epoch ms }
+        meta:        { type: object, description: Optional scenario-specific metadata }
+
+    MetricsSignal:
+      type: object
+      required: [ts, consumerLag, rebalanceState]
+      properties:
+        ts:                   { type: integer, format: int64 }
+        consumerGroup:        { type: string }
+        consumerLag:          { type: integer, description: Current consumer lag (messages behind) }
+        rebalanceState:       { type: string, enum: [stable, preparing-rebalance, completing-rebalance] }
+        controllerEpoch:      { type: integer, description: KRaft controller epoch }
+        jvmHeapPercent:       { type: number, description: Broker JVM heap usage 0–100 }
+        networkInBytesPerSec: { type: integer }
+        kafkaFeatureMarker:   { type: string, description: "e.g. KIP-848, KIP-932, KRaft" }
+        shareGroupQueueDepth: { type: integer, description: KIP-932 share group queue depth if applicable }
+
+    IncidentRecord:
+      type: object
+      required: [incidentId, scenarioId, actionTaken, ts]
+      properties:
+        incidentId:   { type: string, format: uuid }
+        scenarioId:   { type: string }
+        rootCause:    { type: string }
+        actionTaken:  { type: string }
+        approvedBy:   { type: string }
+        lagBefore:    { type: integer }
+        lagAfter:     { type: integer }
+        toolCalled:   { type: string }
+        clusterMutation: { type: string, description: Actual kubectl/oc command executed }
+        ts:           { type: integer, format: int64 }
+
+    AuditRecord:
+      type: object
+      required: [id, ts, type, agent, summary]
+      properties:
+        id:      { type: string }
+        ts:      { type: integer, format: int64 }
+        type:
+          type: string
+          enum:
+            - consume
+            - publish
+            - tool-call
+            - approval
+            - agent-kill
+            - agent-restart
+            - replay-start
+            - replay-complete
+            - lesson
+            - notification
+            - reasoning
+        agent:   { type: string, enum: [intake, monitor, writer, notification, system] }
+        topic:   { type: string, description: Kafka topic name if relevant }
+        summary: { type: string }
+        detail:  { type: object, description: Event-type-specific payload }
+
+    LessonRecord:
+      type: object
+      required: [id, ts, actionTaken, effective]
+      properties:
+        id:                { type: string }
+        ts:                { type: integer, format: int64 }
+        scenarioId:        { type: string }
+        actionTaken:       { type: string }
+        effective:         { type: boolean, description: Did the action resolve the incident? }
+        lagBefore:         { type: integer }
+        lagAfter:          { type: integer }
+        adjustedThreshold: { type: integer, description: New alert threshold derived from this lesson }
+        notes:             { type: string }
+
+    NotificationRecord:
+      type: object
+      required: [id, ts, channel, message, scenarioId]
+      properties:
+        id:         { type: string }
+        ts:         { type: integer, format: int64 }
+        channel:    { type: string, enum: [slack, itsm, email] }
+        message:    { type: string }
+        scenarioId: { type: string }
+        ticketId:   { type: string, description: ITSM ticket ID if channel=itsm }
+
+    PaymentEvent:
+      type: object
+      required: [paymentId, amount, currency, ts]
+      properties:
+        paymentId:   { type: string, format: uuid }
+        amount:      { type: number }
+        currency:    { type: string, example: USD }
+        merchantId:  { type: string }
+        customerId:  { type: string }
+        status:      { type: string, enum: [pending, completed, failed, reversed] }
+        ts:          { type: integer, format: int64 }
+
+  securitySchemes:
+    confluentSaslPlain:
+      type: plain
+      description: |
+        Confluent Cloud SASL/PLAIN over TLS.
+        Username = API Key, Password = API Secret.
+        Create at https://confluent.cloud → your cluster → API Keys.
