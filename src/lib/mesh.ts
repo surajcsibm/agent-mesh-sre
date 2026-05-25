@@ -694,6 +694,7 @@ export function getMesh() {
     triggerScenario,
     resolveApproval,
     decideApproval: resolveApproval,   // alias used by approvals route
+    reset: resetMesh,                  // alias used by reset route
     getSnapshot,
   };
 }
