@@ -591,13 +591,18 @@ function UserMenu() {
 function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   return (
     <div className="flex flex-col h-full">
-      <div className="text-xs font-bold text-[#1e3a5f] uppercase tracking-widest mb-2 px-1 opacity-60">
-        Audit Log <span className="text-[#94a3b8] font-normal normal-case">({log.length})</span>
+      <div className="flex items-center gap-1.5 mb-3 px-1">
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#2563eb" }} />
+        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "#1e3a5f", opacity: 0.7 }}>
+          Audit Log
+        </span>
+        <span className="text-xs font-normal ml-1" style={{ color: "#94a3b8" }}>({log.length})</span>
       </div>
       <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
         {[...log].reverse().map((r) => (
           <div key={r.id}
-            className="rounded-lg bg-white border border-[#e8eef4] px-3 py-2.5">
+            className="rounded-xl bg-white border border-[#e8eef4] px-3 py-3"
+            style={{ borderLeftWidth: 3, borderLeftColor: AUDIT_COLOR[r.type] ?? "#94a3b8" }}>
             <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
               <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
                 style={{
@@ -607,15 +612,18 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
                 }}>
                 {r.type}
               </span>
-              <span className="text-[10px] font-semibold text-[#94a3b8] shrink-0">[{r.agent}]</span>
+              <span className="text-[11px] font-semibold text-[#94a3b8] shrink-0">[{r.agent}]</span>
             </div>
-            <div className="text-xs text-[#475569] leading-relaxed break-words whitespace-normal">
+            <div className="text-xs text-[#334155] leading-relaxed break-words whitespace-normal font-medium">
               {r.summary}
             </div>
           </div>
         ))}
         {log.length === 0 && (
-          <p className="text-xs text-[#94a3b8] italic px-1 pt-2">No events yet — trigger a scenario.</p>
+          <div className="flex flex-col items-center justify-center pt-8 gap-2">
+            <span style={{ fontSize: 28, opacity: 0.2 }}>📋</span>
+            <p className="text-xs italic" style={{ color: "#94a3b8" }}>No events yet — trigger a scenario.</p>
+          </div>
         )}
       </div>
     </div>
@@ -1364,6 +1372,139 @@ function DeleteConfirmModal({
   );
 }
 
+// ── Scenario history bar ──────────────────────────────────────────────────────
+
+const SCENARIO_BADGE_COLOR: Record<string, string> = {
+  "lag-spike":               "#2563eb",
+  "controller-failover":     "#7c3aed",
+  "share-group":             "#ea580c",
+  "benign-rebalance":        "#16a34a",
+  "schema-mismatch":         "#8b5cf6",
+  "disk-saturation":         "#dc2626",
+  "under-replication":       "#b91c1c",
+  "producer-timeout":        "#d97706",
+  "consumer-session-timeout":"#4f46e5",
+  "compaction-lag":          "#0891b2",
+  "topic-heal":              "#1D9E75",
+  "topic-change":            "#0891b2",
+};
+
+function inferColor(label: string): string {
+  const lower = label.toLowerCase();
+  if (lower.includes("lag"))        return "#2563eb";
+  if (lower.includes("failover"))   return "#7c3aed";
+  if (lower.includes("share"))      return "#ea580c";
+  if (lower.includes("suppress") || lower.includes("false")) return "#16a34a";
+  if (lower.includes("schema"))     return "#8b5cf6";
+  if (lower.includes("disk"))       return "#dc2626";
+  if (lower.includes("under"))      return "#b91c1c";
+  if (lower.includes("producer"))   return "#d97706";
+  if (lower.includes("session"))    return "#4f46e5";
+  if (lower.includes("compact"))    return "#0891b2";
+  if (lower.includes("heal"))       return "#1D9E75";
+  return "#64748b";
+}
+
+function ScenarioHistoryBar({ history, onView }: {
+  history: EmailSummaryData[];
+  onView: (d: EmailSummaryData) => void;
+}) {
+  if (!history.length) return null;
+
+  return (
+    <div className="p-4">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#1D9E75" }} />
+        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "#1e3a5f" }}>
+          Scenario History
+        </span>
+        <span className="ml-1 text-xs font-normal" style={{ color: "#94a3b8" }}>
+          ({history.length} cycle{history.length !== 1 ? "s" : ""}) — click any card to review
+        </span>
+      </div>
+
+      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+        {history.map((h, i) => {
+          const approved   = h.approved;
+          const cardColor  = inferColor(h.scenarioLabel);
+          const confidence = h.reasoning ? Math.round(h.reasoning.confidence * 100) : null;
+          const lagFixed   = !approved ? null : (h.lagBefore > 0 && h.lagAfter < h.lagBefore);
+
+          return (
+            <button
+              key={i}
+              onClick={() => onView(h)}
+              className="rounded-2xl border text-left transition-all shadow-sm"
+              style={{
+                background: "#fff",
+                borderColor: cardColor + "35",
+                overflow: "hidden",
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.borderColor = cardColor;
+                (e.currentTarget as HTMLElement).style.boxShadow = `0 6px 20px ${cardColor}22`;
+                (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)";
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLElement).style.borderColor = cardColor + "35";
+                (e.currentTarget as HTMLElement).style.boxShadow = "";
+                (e.currentTarget as HTMLElement).style.transform = "";
+              }}
+            >
+              {/* Coloured top bar */}
+              <div style={{ height: 4, background: `linear-gradient(90deg, ${cardColor}, ${cardColor}88)` }} />
+
+              <div style={{ padding: "14px 16px 14px" }}>
+                {/* Scenario name */}
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#1e3a5f", lineHeight: 1.35, marginBottom: 6 }}>
+                  {h.scenarioLabel}
+                </div>
+
+                {/* Root cause snippet */}
+                {h.reasoning?.rootCause && (
+                  <div style={{
+                    fontSize: 11, color: "#64748b", lineHeight: 1.5, marginBottom: 10,
+                    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
+                  }}>
+                    {h.reasoning.rootCause}
+                  </div>
+                )}
+
+                {/* Outcome row */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20,
+                    background: approved ? "#dcfce7" : "#fef2f2",
+                    color: approved ? "#16a34a" : "#dc2626",
+                    border: `1px solid ${approved ? "#86efac" : "#fca5a5"}`,
+                  }}>
+                    {approved ? "✓ Resolved" : "✗ Rejected"}
+                  </span>
+                  {confidence !== null && (
+                    <span style={{ fontSize: 10, fontWeight: 600, color: "#94a3b8" }}>
+                      {confidence}% confidence
+                    </span>
+                  )}
+                  {lagFixed && (
+                    <span style={{ fontSize: 10, fontWeight: 600, color: "#1D9E75" }}>
+                      ↓ lag fixed
+                    </span>
+                  )}
+                </div>
+
+                {/* Email sent indicator */}
+                <div style={{ marginTop: 8, fontSize: 10, color: h.sent ? "#1D9E75" : "#94a3b8" }}>
+                  {h.sent ? "✉ email sent" : "✉ no email"}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -1437,6 +1578,35 @@ export default function Dashboard() {
 
   const [extraOpen, setExtraOpen] = useState(false);
   const [topicsVisible, setTopicsVisible] = useState(20);
+
+  // ── Floating overlay states ────────────────────────────────────────────────
+  const [brokerOpen, setBrokerOpen]           = useState(false);
+  const [liveFeedOpen, setLiveFeedOpen]       = useState(false);
+  const [summaryHistory, setSummaryHistory]   = useState<EmailSummaryData[]>([]);
+  const [viewHistorySummary, setViewHistorySummary] = useState<EmailSummaryData | null>(null);
+  const prevRunningRef = useRef(false);
+
+  // Open live feed when a new scenario starts ────────────────────────────────
+  useEffect(() => {
+    if (state.scenarioRunning && !prevRunningRef.current) {
+      setLiveFeedOpen(true);
+    }
+    prevRunningRef.current = state.scenarioRunning;
+  }, [state.scenarioRunning]);
+
+  // Capture completed scenario to history; close live feed ──────────────────
+  useEffect(() => {
+    if (!state.emailSummary) return;
+    setLiveFeedOpen(false);
+    setSummaryHistory(prev => {
+      if (
+        prev.length > 0 &&
+        prev[0].scenarioLabel === state.emailSummary!.scenarioLabel &&
+        prev[0].action        === state.emailSummary!.action
+      ) return prev;
+      return [state.emailSummary!, ...prev].slice(0, 14);
+    });
+  }, [state.emailSummary]);
 
   const handleTopicSave = (updated: KafkaTopic) => {
     const prev = topics.find((t) => t.id === updated.id)!;
@@ -1563,8 +1733,8 @@ export default function Dashboard() {
 
           {/* Pinned Scenarios */}
           <div>
-            <div className="text-[11px] font-bold uppercase tracking-widest mb-3"
-                 style={{ color: "#1e3a5f", opacity: 0.55 }}>
+            <div className="text-xs font-bold uppercase tracking-widest mb-3"
+                 style={{ color: "#1e3a5f", opacity: 0.65 }}>
               Common Scenarios
             </div>
             <div className="space-y-2">
@@ -1573,17 +1743,17 @@ export default function Dashboard() {
                   key={s.id}
                   disabled={state.scenarioRunning}
                   onClick={() => trigger(s.id)}
-                  className="w-full text-left rounded-xl p-3 border transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
-                  style={{ background: "#fff", borderColor: "#dce5ef" }}
-                  onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) { (e.currentTarget.style.borderColor = "#1D9E75"); (e.currentTarget.style.background = "#f0faf6"); }}}
-                  onMouseLeave={e => { (e.currentTarget.style.borderColor = "#dce5ef"); (e.currentTarget.style.background = "#fff"); }}
+                  className="w-full text-left rounded-xl p-3.5 border transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                  style={{ background: "#fff", borderColor: s.color + "28", borderLeftWidth: 3, borderLeftColor: s.color }}
+                  onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) { (e.currentTarget as HTMLElement).style.background = s.color + "08"; (e.currentTarget as HTMLElement).style.boxShadow = `0 3px 12px ${s.color}18`; }}}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#fff"; (e.currentTarget as HTMLElement).style.boxShadow = ""; }}
                 >
                   <div className="flex items-start justify-between gap-1.5">
-                    <span className="text-xs font-semibold leading-tight" style={{ color: "#1e3a5f" }}>
+                    <span className="text-xs font-semibold leading-snug" style={{ color: "#1e3a5f" }}>
                       {s.label}
                     </span>
                     <span className="text-[10px] font-bold shrink-0 px-1.5 py-0.5 rounded-md"
-                      style={{ background: s.color + "15", color: s.color, border: `1px solid ${s.color}30` }}>
+                      style={{ background: s.color + "15", color: s.color, border: `1px solid ${s.color}35` }}>
                       {s.badge}
                     </span>
                   </div>
@@ -1642,15 +1812,16 @@ export default function Dashboard() {
           <TopicsPanel topics={topics} prevLagRef={prevLagRef} onSelect={setSelectedTopic} onCreateNew={() => setCreateModalOpen(true)} />
         </aside>
 
-        {/* Canvas + live feed + topics — stacked vertically */}
+        {/* Middle panel — large canvas + floating overlays + scenario history */}
         <main className="flex-1 flex flex-col overflow-hidden" style={{ background: "#ffffff" }}>
 
-          {/* 1 ── Agent canvas (dot-grid, fixed height) */}
+          {/* 1 ── Agent canvas — large, with floating overlays ── */}
           <div className="shrink-0 relative"
                style={{
-                 height: 360,
-                 backgroundImage: "radial-gradient(circle, #c8d8e8 1px, transparent 1px)",
-                 backgroundSize: "24px 24px",
+                 height: 540,
+                 backgroundImage: "radial-gradient(circle, #b8cfe0 1.5px, transparent 1.5px)",
+                 backgroundSize: "28px 28px",
+                 background: "radial-gradient(circle, #b8cfe0 1.5px, transparent 1.5px) #eef4f9",
                }}>
             <AgentCanvas
               agents={state.agents}
@@ -1659,24 +1830,173 @@ export default function Dashboard() {
               onKill={(id) => agentAction(id, "kill")}
               onRestart={(id) => agentAction(id, "restart")}
             />
+
+            {/* ── Floating Broker Info toggle ─────────────────────── */}
+            <button
+              onClick={() => setBrokerOpen(o => !o)}
+              style={{
+                position: "absolute", top: 10, left: 10, zIndex: 10,
+                background: brokerOpen ? "#1e3a5f" : "rgba(30,58,95,0.82)",
+                color: "#fff",
+                border: "1px solid rgba(147,197,253,0.4)",
+                borderRadius: 10, padding: "6px 12px",
+                fontSize: 12, fontWeight: 700, cursor: "pointer",
+                backdropFilter: "blur(6px)",
+                boxShadow: "0 3px 12px rgba(0,0,0,0.22)",
+                transition: "all 0.2s ease",
+                letterSpacing: "0.3px",
+              }}
+            >
+              {brokerOpen ? "× Close" : "⬡ Broker Info"}
+            </button>
+
+            {/* ── Broker details popup ────────────────────────────── */}
+            {brokerOpen && state.broker && (
+              <div style={{
+                position: "absolute", top: 48, left: 10, zIndex: 20,
+                background: "#fff",
+                border: "2px solid #3b82f6",
+                borderRadius: 16, padding: "16px 18px",
+                boxShadow: "0 10px 32px rgba(59,130,246,0.22)",
+                minWidth: 210,
+                animation: "slideDown 0.2s ease-out",
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: "#3b82f6", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>
+                  ⬡ BROKER
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                  {[
+                    { label: "Mode",             value: state.broker.mode,               valueColor: "#1e3a5f" },
+                    { label: "Brokers Online",    value: String(state.broker.brokersOnline), valueColor: "#16a34a" },
+                    { label: "Controller Epoch",  value: String(state.broker.controllerEpoch), valueColor: "#1e3a5f" },
+                    { label: "Topics",            value: String(Object.keys(state.broker.topics).length), valueColor: "#2563eb" },
+                  ].map(row => (
+                    <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>{row.label}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: row.valueColor }}>{row.value}</span>
+                    </div>
+                  ))}
+                  <div style={{ borderTop: "1px solid #e2e8f0", paddingTop: 8, marginTop: 2 }}>
+                    <span style={{
+                      fontSize: 12, fontWeight: 700,
+                      color: (state.broker.mtls !== false && state.broker.sasl !== false) ? "#16a34a" : "#f97316",
+                    }}>
+                      mTLS + SASL {(state.broker.mtls !== false && state.broker.sasl !== false) ? "✓ Secure" : "✗ Unsecured"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Live feed floating popup — visible only during scenario ── */}
+            {state.scenarioRunning && !state.emailSummary && liveFeedOpen && (
+              <div style={{
+                position: "absolute",
+                bottom: 10, left: "50%", transform: "translateX(-50%)",
+                zIndex: 15,
+                width: 420, maxHeight: 210,
+                background: "rgba(255,255,255,0.97)",
+                border: "1.5px solid #dce5ef",
+                borderRadius: 16,
+                boxShadow: "0 10px 36px rgba(30,58,95,0.20)",
+                overflow: "hidden",
+                backdropFilter: "blur(10px)",
+                animation: "slideUp 0.25s ease-out",
+              }}>
+                {/* Feed header */}
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "9px 13px", background: "#f0f4f8",
+                  borderBottom: "1px solid #dce5ef",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <span style={{
+                      width: 8, height: 8, borderRadius: "50%", background: "#1D9E75",
+                      display: "inline-block", animation: "pulse 2s infinite",
+                    }} />
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "#1e3a5f", textTransform: "uppercase", letterSpacing: "0.7px" }}>
+                      Live Events Feed
+                    </span>
+                    <span style={{ fontSize: 11, color: "#94a3b8" }}>· {state.auditLog.length} events</span>
+                  </div>
+                  <button
+                    onClick={() => setLiveFeedOpen(false)}
+                    style={{ fontSize: 16, color: "#94a3b8", background: "none", border: "none", cursor: "pointer", lineHeight: 1, padding: "0 2px" }}
+                  >
+                    ×
+                  </button>
+                </div>
+                {/* Feed items */}
+                <div style={{ overflowY: "auto", maxHeight: 155, padding: "7px 9px", display: "flex", flexDirection: "column", gap: 4 }}>
+                  {[...state.auditLog].reverse().slice(0, 35).map((r) => {
+                    const color = AUDIT_COLOR[r.type] ?? "#94a3b8";
+                    return (
+                      <div key={r.id} style={{
+                        display: "flex", alignItems: "flex-start", gap: 7, padding: "5px 8px",
+                        borderRadius: 9, background: color + "07", border: `1px solid ${color}22`,
+                      }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                          background: color + "18", color, border: `1px solid ${color}30`,
+                          flexShrink: 0, textTransform: "uppercase",
+                        }}>
+                          {r.type}
+                        </span>
+                        <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, flexShrink: 0 }}>
+                          [{r.agent}]
+                        </span>
+                        <span style={{ fontSize: 11, color: "#334155", lineHeight: 1.4 }}>
+                          {r.summary}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {state.auditLog.length === 0 && (
+                    <p style={{ fontSize: 12, color: "#94a3b8", textAlign: "center", padding: "14px 0", fontStyle: "italic" }}>
+                      Waiting for events…
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── "Show live feed" button when running but feed was closed ── */}
+            {state.scenarioRunning && !state.emailSummary && !liveFeedOpen && (
+              <button
+                onClick={() => setLiveFeedOpen(true)}
+                style={{
+                  position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)",
+                  zIndex: 15, fontSize: 11, fontWeight: 700,
+                  background: "rgba(29,158,117,0.92)", color: "#fff",
+                  border: "none", borderRadius: 20, padding: "6px 16px",
+                  cursor: "pointer", backdropFilter: "blur(4px)",
+                  boxShadow: "0 3px 12px rgba(29,158,117,0.35)",
+                }}
+              >
+                ● Live Feed
+              </button>
+            )}
           </div>
 
-          {/* 2 ── Notifications bar — matches wireframe green bar */}
+          {/* 2 ── Notification bar ─────────────────────────────────────────── */}
           {state.notifications.length > 0 && (
-            <div className="shrink-0 px-4 py-1.5"
-                 style={{ borderTop: "1px solid rgba(29,158,117,0.20)", background: "rgba(29,158,117,0.06)" }}>
+            <div className="shrink-0 px-5 py-2"
+                 style={{
+                   borderTop: "1px solid rgba(29,158,117,0.22)",
+                   background: "linear-gradient(90deg, rgba(29,158,117,0.10) 0%, rgba(29,158,117,0.03) 100%)",
+                 }}>
               <div className="flex items-center gap-2 overflow-x-auto">
-                <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse" style={{ background: "#1D9E75" }} />
+                <span className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: "#1D9E75" }} />
                 {[...state.notifications].reverse().slice(0, 1).map((n) => (
                   <button
                     key={n.id}
                     onClick={showLastSummary}
-                    className="flex-1 text-left text-xs font-medium truncate"
-                    style={{ color: "#0F6E56", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                    className="flex-1 text-left font-semibold truncate"
+                    style={{ fontSize: 13, color: "#0F6E56", background: "none", border: "none", cursor: "pointer", padding: 0 }}
                   >
                     {n.message}
                     {state.lastEmailSummary && (
-                      <span className="ml-2 text-[9px]" style={{ color: "#94a3b8" }}>— click to review</span>
+                      <span className="ml-2 font-normal" style={{ fontSize: 11, color: "#94a3b8" }}>— click to review</span>
                     )}
                   </button>
                 ))}
@@ -1684,23 +2004,21 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 3 ── Vertical live events feed (scrollable, fixed height) */}
-          <div className="shrink-0 overflow-hidden" style={{ height: 188, borderTop: "1px solid #dce5ef" }}>
-            <AgentLiveFeed
-              log={state.auditLog}
-              agents={state.agents}
-              running={state.scenarioRunning}
-              hidden={!!state.emailSummary}
-            />
-          </div>
-
-          {/* 4 ── Canvas topics grid (flex-1, scrollable) */}
-          <div className="flex-1 overflow-y-auto min-h-0" style={{ borderTop: "1px solid #dce5ef", background: "#f8fafc" }}>
-            <CanvasTopicsGrid
-              topics={topics}
-              topicsVisible={topicsVisible}
-              onShowMore={() => setTopicsVisible(v => v + 20)}
-            />
+          {/* 3 ── Scenario history (flex-1, scrollable) ────────────────────── */}
+          <div className="flex-1 overflow-y-auto min-h-0" style={{ background: "#f8fafc", borderTop: "1px solid #dce5ef" }}>
+            {summaryHistory.length > 0 ? (
+              <ScenarioHistoryBar history={summaryHistory} onView={setViewHistorySummary} />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full gap-3 py-8">
+                <div style={{ fontSize: 32, opacity: 0.25 }}>📋</div>
+                <p className="text-sm font-medium" style={{ color: "#94a3b8" }}>
+                  Trigger a scenario to see history here
+                </p>
+                <p style={{ fontSize: 11, color: "#b0bec8" }}>
+                  Each completed MRAL cycle creates a clickable summary card
+                </p>
+              </div>
+            )}
           </div>
         </main>
 
@@ -1714,17 +2032,25 @@ export default function Dashboard() {
           {/* Lessons learned — emerald Arctic */}
           {state.lessons.length > 0 && (
             <div className="shrink-0 mt-4 pt-3" style={{ borderTop: "1px solid #dce5ef" }}>
-              <div className="text-xs font-bold uppercase tracking-widest mb-2"
-                   style={{ color: "#1e3a5f", opacity: 0.55 }}>
-                Lessons Learned ({state.lessons.length})
+              <div className="flex items-center gap-1.5 mb-3">
+                <span className="w-2 h-2 rounded-full" style={{ background: "#1D9E75" }} />
+                <span className="text-xs font-bold uppercase tracking-widest"
+                     style={{ color: "#1e3a5f", opacity: 0.7 }}>
+                  Lessons Learned
+                </span>
+                <span className="text-xs font-normal ml-1" style={{ color: "#94a3b8" }}>({state.lessons.length})</span>
               </div>
-              <div className="space-y-2 max-h-40 overflow-y-auto">
-                {[...state.lessons].reverse().slice(0, 5).map((l) => (
+              <div className="space-y-2 max-h-44 overflow-y-auto">
+                {[...state.lessons].reverse().slice(0, 6).map((l) => (
                   <div key={l.id}
-                    className="rounded-lg px-3 py-2.5"
-                    style={{ background: "#e6f5f0", border: "1px solid #a3d9c8" }}>
-                    <div className="text-xs font-semibold truncate" style={{ color: "#0F6E56" }}>[{l.scenarioId}] {l.actionTaken}</div>
-                    <div className="text-xs mt-0.5 leading-relaxed" style={{ color: "#475569" }}>{l.notes.slice(0, 80)}…</div>
+                    className="rounded-xl px-3 py-3"
+                    style={{ background: "linear-gradient(135deg,#e6f5f0,#f0faf7)", border: "1px solid #a3d9c8" }}>
+                    <div className="text-xs font-bold truncate mb-1" style={{ color: "#0F6E56" }}>
+                      [{l.scenarioId}] {l.actionTaken}
+                    </div>
+                    <div className="text-xs leading-relaxed" style={{ color: "#475569" }}>
+                      {l.notes.slice(0, 90)}{l.notes.length > 90 ? "…" : ""}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1737,6 +2063,9 @@ export default function Dashboard() {
       <ApprovalGate approvals={state.pendingApprovals} onDecide={approve} />
       {state.emailSummary && (
         <ScenarioEndModal data={state.emailSummary} onClose={dismissEmailSummary} />
+      )}
+      {viewHistorySummary && (
+        <ScenarioEndModal data={viewHistorySummary} onClose={() => setViewHistorySummary(null)} />
       )}
       {selectedTopic && !pendingDelete && (
         <TopicModal

@@ -61,18 +61,17 @@ function AgentNode({ data: rawData }: NodeProps<Node<AgentNodeData>>) {
 
   return (
     <div style={{
-      width: 138,
+      width: 210,
       background: "#ffffff",
-      border: `1.5px solid ${crashed ? "#fca5a5" : accent}`,
-      borderRadius: 12,
-      padding: "12px 12px 10px",
+      border: `2.5px solid ${crashed ? "#fca5a5" : accent}`,
+      borderRadius: 14,
+      padding: "14px 14px 12px",
       boxShadow: (isActive || isAwaiting)
-        ? `0 0 0 3px ${glow}25, 0 6px 24px ${glow}22`
-        : "0 1px 6px rgba(30,58,95,0.07)",
-      transform: (isActive || isAwaiting) ? "scale(1.05)" : "scale(1)",
+        ? `0 0 0 4px ${glow}28, 0 8px 28px ${glow}25`
+        : "0 2px 10px rgba(30,58,95,0.09)",
+      transform: (isActive || isAwaiting) ? "scale(1.06)" : "scale(1)",
       transition: "all 0.3s ease",
     }}>
-      {/* 8 invisible handles (source + target on each side) for clean edge routing */}
       <Handle type="source" position={Position.Top}    id="st" style={H} />
       <Handle type="target" position={Position.Top}    id="tt" style={{ ...H, left: "60%" }} />
       <Handle type="source" position={Position.Right}  id="sr" style={H} />
@@ -84,24 +83,27 @@ function AgentNode({ data: rawData }: NodeProps<Node<AgentNodeData>>) {
 
       {/* Name */}
       <div style={{
-        fontSize: 11, fontWeight: 800, letterSpacing: "0.7px",
-        color: accent, textTransform: "uppercase", marginBottom: 3, lineHeight: 1.3,
+        fontSize: 16, fontWeight: 800, letterSpacing: "0.6px",
+        color: accent, textTransform: "uppercase", marginBottom: 4, lineHeight: 1.3,
       }}>
         {DISPLAY_NAME[agent.id] ?? agent.id.toUpperCase()}
       </div>
 
-      {/* Subtitle / role */}
-      <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 10, lineHeight: 1.4 }}>
+      {/* Subtitle */}
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 13, lineHeight: 1.4 }}>
         {SUBTITLE[agent.id] ?? agent.role}
       </div>
 
-      {/* Status dot — centred, pulsing */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+      {/* Status dot — centred */}
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 7, marginBottom: 11 }}>
         <span style={{
-          width: 10, height: 10, borderRadius: "50%", background: dotColor,
-          display: "block", boxShadow: `0 0 0 3px ${dotColor}20`,
+          width: 13, height: 13, borderRadius: "50%", background: dotColor,
+          display: "block", boxShadow: `0 0 0 5px ${dotColor}22`,
           animation: "pulse 2s infinite",
         }} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: dotColor }}>
+          {agent.status.replace(/-/g, " ")}
+        </span>
       </div>
 
       {/* Kill / Restart */}
@@ -109,18 +111,18 @@ function AgentNode({ data: rawData }: NodeProps<Node<AgentNodeData>>) {
         <button
           onClick={() => onKill(agent.id)}
           style={{
-            width: "100%", fontSize: 8, fontWeight: 600, padding: "2px 0",
-            background: "rgba(220,38,38,0.05)", color: "#dc2626",
-            border: "1px solid rgba(220,38,38,0.18)", borderRadius: 4, cursor: "pointer",
+            width: "100%", fontSize: 11, fontWeight: 700, padding: "5px 0",
+            background: "rgba(220,38,38,0.06)", color: "#dc2626",
+            border: "1px solid rgba(220,38,38,0.22)", borderRadius: 7, cursor: "pointer",
           }}
         >Kill</button>
       ) : (
         <button
           onClick={() => onRestart(agent.id)}
           style={{
-            width: "100%", fontSize: 8, fontWeight: 600, padding: "2px 0",
-            background: "rgba(29,158,117,0.07)", color: "#1D9E75",
-            border: "1px solid rgba(29,158,117,0.22)", borderRadius: 4, cursor: "pointer",
+            width: "100%", fontSize: 11, fontWeight: 700, padding: "5px 0",
+            background: "rgba(29,158,117,0.08)", color: "#1D9E75",
+            border: "1px solid rgba(29,158,117,0.28)", borderRadius: 7, cursor: "pointer",
           }}
         >Restart</button>
       )}
@@ -145,12 +147,12 @@ function BrokerNode({ data: rawData }: NodeProps<Node<BrokerNodeData>>) {
 
   return (
     <div style={{
-      width: 150,
+      width: 186,
       background: "#ffffff",
-      border: "1.5px solid #3b82f6",
-      borderRadius: 12,
-      padding: "12px 12px 12px",
-      boxShadow: "0 2px 12px rgba(59,130,246,0.12)",
+      border: "2px solid #3b82f6",
+      borderRadius: 14,
+      padding: "14px 14px 14px",
+      boxShadow: "0 4px 18px rgba(59,130,246,0.16)",
     }}>
       <Handle type="source" position={Position.Top}    id="st" style={H} />
       <Handle type="target" position={Position.Top}    id="tt" style={{ ...H, left: "60%" }} />
@@ -162,18 +164,18 @@ function BrokerNode({ data: rawData }: NodeProps<Node<BrokerNodeData>>) {
       <Handle type="target" position={Position.Left}   id="tl" style={{ ...H, top: "62%" }} />
 
       <div style={{
-        fontSize: 11, fontWeight: 800, letterSpacing: "0.7px",
-        color: "#3b82f6", textTransform: "uppercase", marginBottom: 4,
+        fontSize: 14, fontWeight: 800, letterSpacing: "0.7px",
+        color: "#3b82f6", textTransform: "uppercase", marginBottom: 6,
       }}>
         BROKER
       </div>
-      <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>
+      <div style={{ fontSize: 12, color: "#64748b", marginBottom: 5 }}>
         {d.mode} · {d.brokersOnline} online
       </div>
-      <div style={{ fontSize: 9, color: secure ? "#1D9E75" : "#f97316", fontWeight: 600 }}>
+      <div style={{ fontSize: 11, color: secure ? "#1D9E75" : "#f97316", fontWeight: 700 }}>
         mTLS + SASL {secure ? "✓" : "✗"}
       </div>
-      <div style={{ fontSize: 9, color: "#94a3b8", marginTop: 3 }}>
+      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 5 }}>
         {d.topicCount} topics · epoch {d.controllerEpoch}
       </div>
     </div>
@@ -189,11 +191,11 @@ const nodeTypes = { agent: AgentNode, broker: BrokerNode };
 //   [MONITOR]             [NOTIFY]
 //
 const NODE_POS: Record<string, { x: number; y: number }> = {
-  intake:       { x: 30,  y: 40  },
-  writer:       { x: 490, y: 40  },
-  broker:       { x: 258, y: 192 },
-  monitor:      { x: 30,  y: 350 },
-  notification: { x: 490, y: 350 },
+  intake:       { x: 20,  y: 30  },
+  writer:       { x: 560, y: 30  },
+  broker:       { x: 274, y: 210 },
+  monitor:      { x: 20,  y: 390 },
+  notification: { x: 560, y: 390 },
 };
 
 // ── Edge colours (inactive state, per wireframe accent colours) ───────────────
@@ -283,10 +285,10 @@ export default function AgentCanvas({ agents, broker, activeParticles, onKill, o
         label: e.label,
         animated: active,
         style: {
-          stroke:           active ? "#1D9E75" : baseColor,
-          strokeWidth:      active ? 2.5 : 1.5,
-          strokeDasharray:  active ? undefined : "7 4",
-          opacity:          active ? 1 : 0.5,
+          stroke:           active ? "#16a34a" : baseColor,
+          strokeWidth:      active ? 6 : 3,
+          strokeDasharray:  active ? undefined : "9 5",
+          opacity:          active ? 1 : 0.55,
         },
         labelStyle:         { fontSize: 8, fill: "#94a3b8" },
         labelBgStyle:       { fill: "rgba(255,255,255,0.85)", fillOpacity: 0.85 },
