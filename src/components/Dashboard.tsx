@@ -885,23 +885,115 @@ const TOPIC_STATUS_STYLE: Record<KafkaTopic["status"], { dot: string; text: stri
   critical: { dot: "bg-red-500",     text: "text-red-700",     bg: "bg-red-50",     border: "border-red-200"     },
 };
 
+// Auto-create topics when a scenario runs — each scenario seeds its own relevant topics
+const SCENARIO_AUTO_TOPICS: Record<string, Omit<KafkaTopic, "id">[]> = {
+  "lag-spike": [
+    { name: "ops.kafka.metrics.v1", partitions: 6, replicationFactor: 3, retentionHours: 24,
+      lagTotal: 18500, msgPerSec: 420, status: "critical",
+      consumerGroups: ["payments-consumer", "sre-monitor"],
+      description: "Kafka consumer group metrics — high lag detected on payments-consumer." },
+    { name: "ops.requests.v1", partitions: 3, replicationFactor: 3, retentionHours: 24,
+      lagTotal: 340, msgPerSec: 85, status: "healthy",
+      consumerGroups: ["sre-monitor"],
+      description: "Incoming SRE operation requests." },
+  ],
+  "controller-failover": [
+    { name: "ops.incidents.v1", partitions: 3, replicationFactor: 3, retentionHours: 72,
+      lagTotal: 0, msgPerSec: 12, status: "healthy",
+      consumerGroups: ["monitor-agent", "writer-agent"],
+      description: "KRaft controller incident events — tracks failover and re-election." },
+    { name: "ops.kafka.metrics.v1", partitions: 6, replicationFactor: 3, retentionHours: 24,
+      lagTotal: 5200, msgPerSec: 210, status: "degraded",
+      consumerGroups: ["sre-monitor"],
+      description: "Kafka broker metrics — elevated lag during controller re-election." },
+  ],
+  "share-group": [
+    { name: "share.group.events.v1", partitions: 12, replicationFactor: 3, retentionHours: 48,
+      lagTotal: 24000, msgPerSec: 1800, status: "critical",
+      consumerGroups: ["share-group-consumer-a", "share-group-consumer-b"],
+      description: "KIP-932 share group partition events — storm detected during rebalance." },
+    { name: "ops.kafka.metrics.v1", partitions: 6, replicationFactor: 3, retentionHours: 24,
+      lagTotal: 8100, msgPerSec: 630, status: "critical",
+      consumerGroups: ["sre-monitor"],
+      description: "Kafka broker metrics — high churn from share-group rebalance." },
+  ],
+  "benign-rebalance": [
+    { name: "ops.kafka.metrics.v1", partitions: 6, replicationFactor: 3, retentionHours: 24,
+      lagTotal: 1200, msgPerSec: 310, status: "degraded",
+      consumerGroups: ["payments-consumer", "sre-monitor"],
+      description: "Kafka metrics — transient lag spike flagged as false-positive." },
+  ],
+  "schema-mismatch": [
+    { name: "schema.registry.events.v1", partitions: 4, replicationFactor: 3, retentionHours: 168,
+      lagTotal: 3700, msgPerSec: 95, status: "degraded",
+      consumerGroups: ["avro-consumer", "schema-validator"],
+      description: "Schema Registry events — version mismatch between producer v2 and consumer v1." },
+  ],
+  "disk-saturation": [
+    { name: "ops.broker.disk.v1", partitions: 3, replicationFactor: 3, retentionHours: 24,
+      lagTotal: 0, msgPerSec: 28, status: "healthy",
+      consumerGroups: ["disk-monitor"],
+      description: "Broker disk utilisation metrics — broker-2 approaching 95% capacity." },
+    { name: "audit.payment.events.v1", partitions: 16, replicationFactor: 3, retentionHours: 720,
+      lagTotal: 41000, msgPerSec: 2100, status: "critical",
+      consumerGroups: ["audit-archiver", "compliance-reporter"],
+      description: "Audit trail topic — high-volume writes contributing to disk saturation." },
+  ],
+  "under-replication": [
+    { name: "payments.transactions.v1", partitions: 12, replicationFactor: 3, retentionHours: 72,
+      lagTotal: 0, msgPerSec: 820, status: "degraded",
+      consumerGroups: ["payment-processor", "fraud-detector"],
+      description: "Payment transactions — under-replicated: ISR below replication factor." },
+    { name: "payments.settlements.v1", partitions: 4, replicationFactor: 3, retentionHours: 168,
+      lagTotal: 18900, msgPerSec: 8, status: "critical",
+      consumerGroups: ["settlement-engine"],
+      description: "Settlements — under-replicated partitions risk data loss." },
+  ],
+  "producer-timeout": [
+    { name: "payments.transactions.v1", partitions: 12, replicationFactor: 3, retentionHours: 72,
+      lagTotal: 6200, msgPerSec: 240, status: "critical",
+      consumerGroups: ["payment-processor"],
+      description: "Payment transactions — producer batch timeouts causing consumer lag spike." },
+  ],
+  "consumer-session-timeout": [
+    { name: "invoices.created.v1", partitions: 8, replicationFactor: 3, retentionHours: 48,
+      lagTotal: 9800, msgPerSec: 60, status: "critical",
+      consumerGroups: ["invoice-renderer", "email-notifier"],
+      description: "Invoice creation events — consumer GC pauses causing session timeouts." },
+  ],
+  "compaction-lag": [
+    { name: "ops.lessons.v1", partitions: 1, replicationFactor: 3, retentionHours: 8760,
+      lagTotal: 0, msgPerSec: 3, status: "degraded",
+      consumerGroups: ["lesson-reader"],
+      description: "Compacted lessons topic — log compaction falling behind on high-frequency updates." },
+    { name: "audit.payment.events.v1", partitions: 16, replicationFactor: 3, retentionHours: 720,
+      lagTotal: 52000, msgPerSec: 1900, status: "critical",
+      consumerGroups: ["audit-archiver"],
+      description: "Audit trail — compaction lag growing due to high write throughput." },
+  ],
+};
+
 // ── Topics panel — in left sidebar ───────────────────────────────────────────
 
 function TopicsPanel({
-  topics, prevLagRef, onSelect, onCreateNew,
+  topics, prevLagRef, onSelect, onCreateNew, visibleCount, onShowMore,
 }: {
   topics: KafkaTopic[];
   prevLagRef: React.MutableRefObject<Record<string, number>>;
   onSelect: (t: KafkaTopic) => void;
   onCreateNew: () => void;
+  visibleCount: number;
+  onShowMore: () => void;
 }) {
-  // Sort: critical first, then degraded, then healthy. Within each group newest-first by lag desc.
+  // Sort: critical first, then degraded, then healthy. Within each group lag desc (most impactful first).
   const sorted = [...topics].sort((a, b) => {
     const order = { critical: 0, degraded: 1, healthy: 2 };
     const statusDiff = order[a.status] - order[b.status];
     if (statusDiff !== 0) return statusDiff;
     return b.lagTotal - a.lagTotal;
-  }).slice(0, 20);
+  });
+  const visible = sorted.slice(0, visibleCount);
+  const remaining = sorted.length - visibleCount;
 
   return (
     <div className="flex flex-col min-h-0">
@@ -920,7 +1012,7 @@ function TopicsPanel({
         </button>
       </div>
       <div className="space-y-2 overflow-y-auto" style={{ maxHeight: "420px" }}>
-        {sorted.map((t) => {
+        {visible.map((t) => {
           const st = TOPIC_STATUS_STYLE[t.status];
           const prevLag = prevLagRef.current[t.id] ?? t.lagTotal;
           const lagTrend = t.lagTotal > prevLag + 50 ? "▲" : t.lagTotal < prevLag - 50 ? "▼" : null;
@@ -961,10 +1053,16 @@ function TopicsPanel({
             </button>
           );
         })}
-        {topics.length > 20 && (
-          <p className="text-[9px] text-center pt-1" style={{ color: "#94a3b8" }}>
-            Showing top 20 of {topics.length} topics
-          </p>
+        {remaining > 0 && (
+          <button
+            onClick={onShowMore}
+            className="w-full text-[10px] font-semibold rounded-xl py-2 border border-dashed transition-all"
+            style={{ color: "#1D9E75", borderColor: "#a3d9c8", background: "#f0faf6" }}
+            onMouseEnter={e => { (e.currentTarget.style.background = "#e6f5f0"); (e.currentTarget.style.borderColor = "#1D9E75"); }}
+            onMouseLeave={e => { (e.currentTarget.style.background = "#f0faf6"); (e.currentTarget.style.borderColor = "#a3d9c8"); }}
+          >
+            + {Math.min(20, remaining)} more topic{remaining > 1 ? "s" : ""} ↓
+          </button>
         )}
       </div>
     </div>
@@ -1561,6 +1659,29 @@ export default function Dashboard() {
   const [extraOpen, setExtraOpen] = useState(false);
   const [topicsVisible, setTopicsVisible] = useState(20);
 
+  // Wrapper around trigger() that auto-upserts scenario-relevant topics first
+  const handleTrigger = (scenarioId: string) => {
+    const autoTopics = SCENARIO_AUTO_TOPICS[scenarioId];
+    if (autoTopics && autoTopics.length > 0) {
+      setTopics(prev => {
+        let next = [...prev];
+        for (const t of autoTopics) {
+          const exists = next.findIndex(x => x.name === t.name);
+          if (exists >= 0) {
+            // Update metrics to reflect the scenario's state
+            next[exists] = { ...next[exists], lagTotal: t.lagTotal, msgPerSec: t.msgPerSec, status: t.status };
+          } else {
+            next = [{ id: `t-scen-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...t }, ...next];
+          }
+        }
+        return next;
+      });
+      // Scroll topics panel to top so newly-upserted topics are visible
+      setTopicsVisible(v => Math.max(v, 20));
+    }
+    trigger(scenarioId);
+  };
+
   // ── Floating overlay states ────────────────────────────────────────────────
   const [brokerOpen, setBrokerOpen]           = useState(false);
 
@@ -1759,7 +1880,7 @@ export default function Dashboard() {
                 <button
                   key={s.id}
                   disabled={state.scenarioRunning}
-                  onClick={() => trigger(s.id)}
+                  onClick={() => handleTrigger(s.id)}
                   className="w-full text-left rounded-xl p-3.5 border transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
                   style={{ background: "#fff", borderColor: s.color + "28", borderLeftWidth: 3, borderLeftColor: s.color }}
                   onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) { (e.currentTarget as HTMLElement).style.background = s.color + "08"; (e.currentTarget as HTMLElement).style.boxShadow = `0 3px 12px ${s.color}18`; }}}
@@ -1795,7 +1916,7 @@ export default function Dashboard() {
                   <button
                     key={s.id}
                     disabled={state.scenarioRunning}
-                    onClick={() => trigger(s.id)}
+                    onClick={() => handleTrigger(s.id)}
                     className="w-full text-left rounded-xl p-3 border transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
                     style={{ background: "#fff", borderColor: "#dce5ef" }}
                     onMouseEnter={e => { if (!(e.currentTarget as HTMLButtonElement).disabled) { (e.currentTarget.style.borderColor = "#1D9E75"); (e.currentTarget.style.background = "#f0faf6"); }}}
@@ -1826,7 +1947,14 @@ export default function Dashboard() {
           )}
 
           {/* Kafka Topics panel */}
-          <TopicsPanel topics={topics} prevLagRef={prevLagRef} onSelect={setSelectedTopic} onCreateNew={() => setCreateModalOpen(true)} />
+          <TopicsPanel
+            topics={topics}
+            prevLagRef={prevLagRef}
+            onSelect={setSelectedTopic}
+            onCreateNew={() => setCreateModalOpen(true)}
+            visibleCount={topicsVisible}
+            onShowMore={() => setTopicsVisible(v => v + 20)}
+          />
         </aside>
 
         {/* Middle panel — large canvas + floating overlays + scenario history */}
