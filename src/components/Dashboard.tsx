@@ -561,56 +561,56 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   );
 }
 
-// ── Live events feed — canvas overlay ────────────────────────────────────────
-// Terminal-style dark overlay in the bottom-left of the canvas showing the
-// last 6 audit records in real-time as agents become active.
+// ── Live events feed — overlays the right audit-log sidebar while running ─────
+// Matches the audit log card UX exactly. Shown only while a scenario is
+// running; automatically hidden when the scenario-end summary appears.
 
-function LiveEventsFeed({ log, running }: { log: AuditRecord[]; running: boolean }) {
-  const recent = [...log].reverse().slice(0, 6);
-  if (recent.length === 0) return null;
+function LiveEventsFeed({ log, running, hidden }: {
+  log: AuditRecord[];
+  running: boolean;
+  hidden: boolean;
+}) {
+  if (!running || hidden) return null;
+
+  const recent = [...log].reverse().slice(0, 8);
 
   return (
-    <div className="absolute bottom-4 left-4 z-10 w-80 pointer-events-none select-none">
-      <div className="rounded-xl overflow-hidden shadow-2xl"
-        style={{ background: "rgba(15,23,42,0.88)", border: "1px solid rgba(148,163,184,0.18)", backdropFilter: "blur(6px)" }}>
+    <div className="absolute inset-0 z-10 bg-white flex flex-col p-4 animate-[fadeIn_0.15s_ease-out]">
 
-        {/* Header bar */}
-        <div className="flex items-center gap-2 px-3 py-2"
-          style={{ borderBottom: "1px solid rgba(148,163,184,0.12)" }}>
-          <span className={clsx("w-1.5 h-1.5 rounded-full shrink-0", running ? "animate-pulse" : "")}
-            style={{ background: running ? "#4ade80" : "#475569" }} />
-          <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: "#94a3b8" }}>
-            Live Feed
-          </span>
-          <span className="ml-auto text-[9px]" style={{ color: "#475569" }}>{log.length} events</span>
-        </div>
+      {/* Header — mirrors AuditLogPanel heading */}
+      <div className="flex items-center gap-2 mb-2 px-1">
+        <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse shrink-0" />
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+          Live Activity
+        </span>
+        <span className="ml-auto text-[10px] text-slate-300 font-normal normal-case">
+          {log.length} events
+        </span>
+      </div>
 
-        {/* Event rows — fading opacity on older entries */}
-        <div className="px-3 py-2.5 space-y-2">
-          {recent.map((r, i) => {
-            const opacity = Math.max(0.35, 1 - i * 0.13);
-            const agentColor = AGENT_COLOR[r.agent] ?? "#60a5fa";
-            const typeColor  = AUDIT_COLOR[r.type]  ?? "#94a3b8";
-            return (
-              <div key={r.id} style={{ opacity }} className="flex gap-2 items-start">
-                {/* Type badge */}
-                <span className="shrink-0 text-[8px] font-bold uppercase tracking-wide mt-0.5"
-                  style={{ color: typeColor, minWidth: 52, textAlign: "right" }}>
-                  {r.type.slice(0, 10)}
-                </span>
-                {/* Agent + message */}
-                <div className="min-w-0 flex-1">
-                  <span className="text-[9px] font-bold mr-1" style={{ color: agentColor }}>
-                    [{r.agent}]
-                  </span>
-                  <span className="text-[9px] break-words whitespace-normal leading-snug" style={{ color: "#cbd5e1" }}>
-                    {r.summary}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+      {/* Cards — identical style to AuditLogPanel */}
+      <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5">
+        {recent.length === 0 ? (
+          <p className="text-[11px] text-slate-400 italic px-1 pt-2">Waiting for events…</p>
+        ) : recent.map((r) => (
+          <div key={r.id}
+            className="rounded-lg bg-slate-50 border border-slate-100 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+              <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+                style={{
+                  background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "18",
+                  color:       AUDIT_COLOR[r.type] ?? "#94a3b8",
+                  border:     `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}30`,
+                }}>
+                {r.type}
+              </span>
+              <span className="text-[9px] font-semibold text-slate-400 shrink-0">[{r.agent}]</span>
+            </div>
+            <div className="text-[10px] text-slate-600 leading-snug break-words whitespace-normal">
+              {r.summary}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -757,7 +757,7 @@ export default function Dashboard() {
 
         {/* Canvas */}
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
-          <div className="flex-1 p-4 min-h-0 relative">
+          <div className="flex-1 p-4 min-h-0">
             <AgentCanvas
               agents={state.agents}
               broker={state.broker}
@@ -765,7 +765,6 @@ export default function Dashboard() {
               onKill={(id) => agentAction(id, "kill")}
               onRestart={(id) => agentAction(id, "restart")}
             />
-            <LiveEventsFeed log={state.auditLog} running={state.scenarioRunning} />
           </div>
 
           {/* Notifications strip — light green */}
@@ -785,8 +784,13 @@ export default function Dashboard() {
           )}
         </main>
 
-        {/* Right sidebar — audit log + lessons */}
-        <aside className="w-72 shrink-0 bg-white border-l border-slate-200 flex flex-col p-4 overflow-hidden shadow-sm">
+        {/* Right sidebar — audit log + lessons (LiveEventsFeed overlays this while running) */}
+        <aside className="w-72 shrink-0 bg-white border-l border-slate-200 flex flex-col p-4 overflow-hidden shadow-sm relative">
+          <LiveEventsFeed
+            log={state.auditLog}
+            running={state.scenarioRunning}
+            hidden={!!state.emailSummary}
+          />
           <div className="flex-1 overflow-hidden">
             <AuditLogPanel log={state.auditLog} />
           </div>
