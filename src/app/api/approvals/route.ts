@@ -14,6 +14,7 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "id and decision (approved|rejected) required" }, { status: 400 });
   }
   const mesh = getMesh();
-  mesh.decideApproval(body.id, body.decision, body.actor ?? "operator@stage");
+  const decision = body.decision === "approved" ? "approve" : "reject";
+  mesh.decideApproval(body.id, decision, body.actor ?? "operator@stage");
   return NextResponse.json({ ok: true });
 }
