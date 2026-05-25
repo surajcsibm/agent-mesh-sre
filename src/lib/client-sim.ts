@@ -306,7 +306,7 @@ function runShareGroupRebalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Share-group rebalance", message: "✅ payments-share-group rebalance complete — offsets checkpointed", scenarioId: "share-group-rebalance" } });
-      sendEmail("share-group-rebalance", "Share-Group Rebalance", 600, 0, "kafka.shareGroupCheckpoint");
+      sendEmail("share-group", "Share Group Rebalance", 600, 0, "kafka.shareGroupCheckpoint");
     }},
     { ms: 9500, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
@@ -358,16 +358,82 @@ function runPartitionImbalance(dispatch: DispatchFn): () => void {
   ]);
 }
 
+// ── Benign rebalance (false-positive suppression) ────────────────────────────
+
+function runBenignRebalance(dispatch: DispatchFn): () => void {
+  let agents = baseAgents();
+  return schedule([
+    { ms: 0, fn: () => {
+      agents = patch(agents, "intake", { status: "acting" });
+      dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      particle(dispatch, "e-req", "intake", "monitor");
+      toast(dispatch, "🔍 Rebalance event detected — analysing…", "info");
+    }},
+    { ms: 1000, fn: () => {
+      agents = patch(agents, "intake",  { status: "online" });
+      agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
+      dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(120), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      dispatch({ type: "audit", record: auditRec("monitor", "Rebalance detected on payments-consumer — cross-correlating broker + JVM metrics") });
+      particle(dispatch, "e-metrics", "monitor", "monitor");
+    }},
+    { ms: 3000, fn: () => {
+      agents = patch(agents, "monitor", { status: "acting", mralPhase: "act",
+        lastReasoning: {
+          rootCause: "Routine rolling-restart rebalance — not a lag anomaly",
+          confidence: 0.97,
+          kafkaFeatureCited: "KIP-848 Share Groups",
+          rebalanceState: "Rebalancing",
+          controllerEpoch: 14,
+          crossCorrelation: { brokers: "healthy", jvmHeap: "41%", networkInRate: "normal", rebalanceInProgress: true },
+          recommendedAction: "suppress — no action needed",
+          requiresApproval: false,
+          rationale: "Lag 120 msgs/s is within SLO. Rebalance is routine rolling restart, not a spike. Suppressing alert to prevent alert fatigue.",
+          lessonsCited: ["lesson-007"],
+        }
+      });
+      dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      dispatch({ type: "audit", record: auditRec("monitor", "False-positive suppressed — routine rebalance, no action required") });
+      toast(dispatch, "🛡️ False positive suppressed — no action needed", "success");
+      particle(dispatch, "e-inc", "monitor", "writer");
+    }},
+    { ms: 5000, fn: () => {
+      agents = patch(agents, "monitor", { status: "online" });
+      agents = patch(agents, "writer",  { status: "acting" });
+      dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      particle(dispatch, "e-aud", "writer", "notification");
+    }},
+    { ms: 7000, fn: () => {
+      agents = patch(agents, "writer",       { status: "online" });
+      agents = patch(agents, "notification", { status: "acting" });
+      dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Alert suppressed", message: "🛡️ Routine rebalance — false positive suppressed, SLO intact, no ticket opened", scenarioId: "benign-rebalance" } });
+      toast(dispatch, "✅ False-positive suppression complete — email summary sent", "success");
+      sendEmail("benign-rebalance", "False-Positive Suppression", 120, 0, "suppress-alert");
+    }},
+    { ms: 9000, fn: () => {
+      agents = patch(agents, "notification", { status: "online" });
+      dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
+    }},
+  ]);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export type ScenarioKey = "lag-spike" | "controller-failover" | "share-group-rebalance" | "partition-imbalance";
+// Keys must match the `id` values in the SCENARIOS array in Dashboard.tsx
+export type ScenarioKey = string;
 
 export function runClientScenario(key: ScenarioKey, dispatch: DispatchFn): () => void {
   switch (key) {
     case "lag-spike":              return runLagSpike(dispatch);
     case "controller-failover":    return runControllerFailover(dispatch);
+    // Dashboard uses "share-group" (not "share-group-rebalance")
+    case "share-group":
     case "share-group-rebalance":  return runShareGroupRebalance(dispatch);
-    case "partition-imbalance":    return runPartitionImbalance(dispatch);
-    default:                       return () => {};
+    // Dashboard uses "benign-rebalance" (not "partition-imbalance")
+    case "benign-rebalance":
+    case "partition-imbalance":    return runBenignRebalance(dispatch);
+    default:
+      console.warn("[client-sim] unknown scenario key:", key);
+      return () => {};
   }
 }
