@@ -757,15 +757,17 @@ export default function Dashboard() {
 
         {/* Canvas */}
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
-          <div className="flex-1 p-4 min-h-0 relative">
-            <AgentCanvas
-              agents={state.agents}
-              broker={state.broker}
-              activeParticles={state.particles}
-              onKill={(id) => agentAction(id, "kill")}
-              onRestart={(id) => agentAction(id, "restart")}
-            />
-            <LiveEventsFeed log={state.auditLog} running={state.scenarioRunning} />
+          <div className="flex-1 p-4 min-h-0">
+            <div className="relative w-full h-full">
+              <AgentCanvas
+                agents={state.agents}
+                broker={state.broker}
+                activeParticles={state.particles}
+                onKill={(id) => agentAction(id, "kill")}
+                onRestart={(id) => agentAction(id, "restart")}
+              />
+              <LiveEventsFeed log={state.auditLog} running={state.scenarioRunning} />
+            </div>
           </div>
 
           {/* Notifications strip — light green */}
