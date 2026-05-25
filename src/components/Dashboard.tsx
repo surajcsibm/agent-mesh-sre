@@ -561,6 +561,90 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   );
 }
 
+// ── Agent live feed — canvas overlay showing key decisions per active agent ───
+// Filters audit log to high-signal event types only (reasoning, tool-call,
+// approval, lesson, notification). Positioned top-right of the canvas.
+// Same data goes to audit log (all) and summary email/popup (key fields).
+
+const KEY_EVENT_TYPES = new Set([
+  "reasoning", "tool-call", "approval", "lesson", "notification",
+]);
+
+function AgentLiveFeed({ log, agents, running, hidden }: {
+  log: AuditRecord[];
+  agents: AgentState[];
+  running: boolean;
+  hidden: boolean;
+}) {
+  if (!running || hidden) return null;
+
+  const active = agents.find((a) =>
+    (["reasoning", "acting", "awaiting-approval", "learning"] as AgentState["status"][]).includes(a.status)
+  );
+
+  const keyEvents = [...log]
+    .filter((r) => KEY_EVENT_TYPES.has(r.type))
+    .reverse()
+    .slice(0, 5);
+
+  if (!active && keyEvents.length === 0) return null;
+
+  const agentColor = active ? (AGENT_COLOR[active.id] ?? "#60a5fa") : "#60a5fa";
+  const desc       = active ? (PHASE_DESC[active.status] ?? active.status) : null;
+
+  return (
+    <div className="absolute top-4 right-4 z-10 w-64 pointer-events-none select-none
+                    animate-[slideInRight_0.2s_ease-out]">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden">
+
+        {/* Active agent header */}
+        {active && (
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-100"
+            style={{ background: agentColor + "12" }}>
+            <span className="w-2 h-2 rounded-full animate-pulse shrink-0"
+              style={{ background: agentColor }} />
+            <span className="text-[11px] font-bold" style={{ color: agentColor }}>
+              {active.name}
+            </span>
+            {desc && (
+              <span className="ml-auto text-[9px] text-slate-400 shrink-0">{desc}</span>
+            )}
+          </div>
+        )}
+
+        {/* Key event cards */}
+        <div className="p-2 space-y-1.5 max-h-72 overflow-y-auto">
+          {keyEvents.length === 0 ? (
+            <p className="text-[10px] text-slate-400 italic px-1 py-1">Initialising…</p>
+          ) : keyEvents.map((r) => (
+            <div key={r.id}
+              className="rounded-lg px-2.5 py-2 border"
+              style={{
+                background:   (AUDIT_COLOR[r.type] ?? "#94a3b8") + "09",
+                borderColor:  (AUDIT_COLOR[r.type] ?? "#94a3b8") + "28",
+              }}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-[8px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+                  style={{
+                    background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "20",
+                    color:      AUDIT_COLOR[r.type] ?? "#94a3b8",
+                    border:    `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}30`,
+                  }}>
+                  {r.type}
+                </span>
+                <span className="text-[8px] text-slate-400">[{r.agent}]</span>
+              </div>
+              <div className="text-[10px] text-slate-600 leading-snug break-words whitespace-normal">
+                {r.summary}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Live events feed — floats above the audit log while a scenario runs ───────
 // Uses absolute inset-0 inside a dedicated relative wrapper so overflow-hidden
 // on the sidebar never clips it. Light blue/white theme matches the dashboard.
@@ -761,13 +845,20 @@ export default function Dashboard() {
 
         {/* Canvas */}
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
-          <div className="flex-1 p-4 min-h-0">
+          {/* relative here is safe — AgentCanvas is a direct child with w-full h-full */}
+          <div className="flex-1 p-4 min-h-0 relative">
             <AgentCanvas
               agents={state.agents}
               broker={state.broker}
               activeParticles={state.particles}
               onKill={(id) => agentAction(id, "kill")}
               onRestart={(id) => agentAction(id, "restart")}
+            />
+            <AgentLiveFeed
+              log={state.auditLog}
+              agents={state.agents}
+              running={state.scenarioRunning}
+              hidden={!!state.emailSummary}
             />
           </div>
 
