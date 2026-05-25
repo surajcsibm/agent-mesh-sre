@@ -124,8 +124,8 @@ function patch(agents: AgentState[], id: string, updates: Partial<AgentState>): 
   return agents.map(a => a.id === id ? { ...a, ...updates } : a);
 }
 
-function auditRec(agent: string, summary: string, topic?: string): AuditRecord {
-  return { id: uid(), ts: Date.now(), type: "publish", kind: "publish", agent: agent as AgentState["id"], summary, detail: {}, topic };
+function auditRec(agent: string, summary: string, type = "publish", topic?: string): AuditRecord {
+  return { id: uid(), ts: Date.now(), type: type as AuditRecord["type"], kind: type, agent: agent as AgentState["id"], summary, detail: {}, topic };
 }
 
 function particle(dispatch: DispatchFn, edgeId: string, from: string, to: string) {
@@ -226,28 +226,33 @@ function runLagSpike(dispatch: DispatchFn): () => void {
     allTimers.push(setTimeout(fn, ms));
   }
 
-  // Steps 1–3: up to the approval gate
+  // Steps 1–3: up to the approval gate (timing slowed for readability)
   t(0, () => {
     agents = patch(agents, "intake", { status: "acting", mralPhase: "act" });
     dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-    dispatch({ type: "audit", record: auditRec("intake", "Published simulate-lag-spike to ops.requests.v1", "ops.requests.v1") });
+    dispatch({ type: "audit", record: auditRec("intake", "Published simulate-lag-spike to ops.requests.v1", "publish", "ops.requests.v1") });
     particle(dispatch, "e-req", "intake", "monitor");
   });
 
-  t(800, () => {
+  t(1800, () => {
     agents = patch(agents, "intake", { status: "online", mralPhase: "idle" });
     dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(1800), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("intake", "Metrics event consumed from ops.kafka.metrics.v1 — forwarding to monitor", "consume", "ops.kafka.metrics.v1") });
   });
 
-  t(1500, () => {
+  t(3200, () => {
     agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
     dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(4200), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-    dispatch({ type: "audit", record: auditRec("monitor", "Consumer lag spike detected on payments-consumer (4,200 msgs behind)", "ops.kafka.metrics.v1") });
+    dispatch({ type: "audit", record: auditRec("monitor", "Consumer lag spike detected on payments-consumer (4,200 msgs behind)", "reasoning", "ops.kafka.metrics.v1") });
     particle(dispatch, "e-metrics", "monitor", "monitor");
   });
 
-  // t=3s  reasoning complete — pause and wait for human decision
-  t(3000, () => {
+  t(5000, () => {
+    dispatch({ type: "audit", record: auditRec("monitor", "Cross-correlating: brokers healthy · JVM heap 68% · network ↑ 2.1× · rebalance in progress", "reasoning") });
+  });
+
+  // t≈6.5s  reasoning complete — pause and wait for human decision
+  t(6500, () => {
     const toolCall: MCPToolCall = {
       jsonrpc: "2.0", id: uid(), method: "tools/call",
       params: { name: "kafka.scaleConsumers", arguments: { group: "payments-consumer", delta: 2, reason: "Lag spike: 4200 msgs" } },
@@ -274,7 +279,7 @@ function runLagSpike(dispatch: DispatchFn): () => void {
       }
     });
     dispatch({ type: "state", payload: { agents, mralPhase: "awaiting", broker: mockBroker(4200), pendingApprovals: [approval], incidentQueueDepth: 1, scenarioRunning: true } });
-    dispatch({ type: "audit", record: auditRec("monitor", "Awaiting approval: kafka.scaleConsumers (policy-gated, human-in-the-loop)") });
+    dispatch({ type: "audit", record: auditRec("monitor", "Awaiting approval: kafka.scaleConsumers (policy-gated, human-in-the-loop)", "approval") });
     toast(dispatch, "⏳ Approval required: kafka.scaleConsumers — check the approval panel", "warning");
 
     // Register callback — will fire when user clicks Approve or Reject
@@ -284,10 +289,14 @@ function runLagSpike(dispatch: DispatchFn): () => void {
         allTimers.push(setTimeout(() => {
           agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
           dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(4200), pendingApprovals: [], incidentQueueDepth: 1, scenarioRunning: true } });
-          dispatch({ type: "audit", record: auditRec("monitor", "Approved by operator · executing kafka.scaleConsumers") });
+          dispatch({ type: "audit", record: auditRec("monitor", "Approved by operator · executing kafka.scaleConsumers(group=payments-consumer, delta=2)", "approval") });
           toast(dispatch, "✅ Approved — scaling consumers", "info");
           particle(dispatch, "e-inc", "monitor", "writer");
         }, 0));
+
+        allTimers.push(setTimeout(() => {
+          dispatch({ type: "audit", record: auditRec("monitor", "kafka.scaleConsumers succeeded · lag draining at 680 msg/s · ConsumerGroupScaleOut mutation applied", "tool-call") });
+        }, 2000));
 
         allTimers.push(setTimeout(() => {
           agents = patch(agents, "monitor", { status: "online", mralPhase: "idle",
@@ -295,15 +304,19 @@ function runLagSpike(dispatch: DispatchFn): () => void {
           });
           agents = patch(agents, "writer", { status: "acting", mralPhase: "act" });
           dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(180), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-          dispatch({ type: "audit", record: auditRec("writer", "Drafting incident postmortem for lag-spike scenario", "ops.actions.audit.v1") });
+          dispatch({ type: "audit", record: auditRec("writer", "Consuming incident record from ops.incidents.v1 — drafting postmortem", "consume", "ops.incidents.v1") });
           particle(dispatch, "e-aud", "writer", "notification");
-        }, 1500));
+        }, 3500));
+
+        allTimers.push(setTimeout(() => {
+          dispatch({ type: "audit", record: auditRec("writer", "Incident postmortem drafted · publishing audit record to ops.actions.audit.v1", "publish", "ops.actions.audit.v1") });
+        }, 5500));
 
         allTimers.push(setTimeout(() => {
           agents = patch(agents, "writer", { status: "online", mralPhase: "idle" });
           agents = patch(agents, "notification", { status: "acting", mralPhase: "act" });
           dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-          dispatch({ type: "audit", record: auditRec("notification", "Posting to #sre-alerts Slack & opening ITSM ticket", "ops.notifications.v1") });
+          dispatch({ type: "audit", record: auditRec("notification", "Consuming audit record · posting to #sre-alerts Slack & opening ITSM ticket", "notification", "ops.notifications.v1") });
           const slackNotif: NotificationRecord = { id: uid(), ts: Date.now(), channel: "slack", title: "Lag spike resolved", message: "✅ payments-consumer lag spike resolved · lag 4200→0 · scaled N→N+2", scenarioId: "lag-spike" };
           dispatch({ type: "notification", record: slackNotif });
           toast(dispatch, "📢 Slack + ITSM notification sent — sending email summary…", "success");
@@ -320,15 +333,15 @@ function runLagSpike(dispatch: DispatchFn): () => void {
             slackMessage: "✅ payments-consumer lag spike resolved · lag 4,200→0 · scaled N→N+2",
             itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.scaleConsumers resolved consumer lag spike`,
           });
-        }, 3000));
+        }, 7000));
 
         allTimers.push(setTimeout(() => {
           agents = patch(agents, "notification", { status: "online", mralPhase: "idle" });
           agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "learn" });
           dispatch({ type: "state", payload: { agents, mralPhase: "learn", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-          dispatch({ type: "audit", record: auditRec("monitor", "Recording lesson: scale-out threshold adjusted → 150 msg/s") });
+          dispatch({ type: "audit", record: auditRec("monitor", "Recording lesson: scale-out effective · threshold adjusted 300→150 msg/s", "lesson") });
           particle(dispatch, "e-learn", "monitor", "monitor");
-        }, 4500));
+        }, 9500));
 
         allTimers.push(setTimeout(() => {
           agents = patch(agents, "monitor", { status: "online", mralPhase: "idle",
@@ -336,13 +349,13 @@ function runLagSpike(dispatch: DispatchFn): () => void {
           });
           dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
           toast(dispatch, "✅ Scenario complete — lesson recorded", "success");
-        }, 6000));
+        }, 12000));
 
       } else {
         // ── REJECTED PATH ─────────────────────────────────────────────────────
         agents = baseAgents(); // reset all agents to online/idle
         dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
-        dispatch({ type: "audit", record: auditRec("monitor", "Action REJECTED by operator — kafka.scaleConsumers not executed, scenario aborted") });
+        dispatch({ type: "audit", record: auditRec("monitor", "Action REJECTED by operator — kafka.scaleConsumers not executed, scenario aborted", "approval") });
         // Send rejection notification email and show popup
         sendEmail(dispatch, "lag-spike", "Consumer Lag Spike", 4200, 4200, "kafka.scaleConsumers", {
           approvedBy: "operator",
@@ -369,30 +382,36 @@ function runControllerFailover(dispatch: DispatchFn): () => void {
       dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       particle(dispatch, "e-req", "intake", "monitor");
       toast(dispatch, "⚡ Controller failover triggered", "info");
+      dispatch({ type: "audit", record: auditRec("intake", "Published controller-failover event to ops.requests.v1", "publish", "ops.requests.v1") });
     }},
-    { ms: 1200, fn: () => {
+    { ms: 2000, fn: () => {
       agents = patch(agents, "intake",  { status: "online" });
       agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
       dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: { ...mockBroker(0), controllerEpoch: 15 }, pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "KRaft controller failover detected: epoch 14→15, broker-1→broker-2") });
+      dispatch({ type: "audit", record: auditRec("monitor", "KRaft controller failover detected: epoch 14→15, broker-1→broker-2", "reasoning") });
     }},
-    { ms: 3000, fn: () => {
+    { ms: 4000, fn: () => {
+      dispatch({ type: "audit", record: auditRec("monitor", "Election completed in 220ms · no partition reassignment needed · cluster healthy", "reasoning") });
+    }},
+    { ms: 5500, fn: () => {
       agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: { ...mockBroker(0), controllerEpoch: 15 }, pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Acknowledged controller failover — no partition reassignment needed") });
+      dispatch({ type: "audit", record: auditRec("monitor", "Acknowledged controller failover — publishing incident record to ops.incidents.v1", "tool-call") });
       particle(dispatch, "e-inc", "monitor", "writer");
     }},
-    { ms: 5000, fn: () => {
+    { ms: 8000, fn: () => {
       agents = patch(agents, "monitor", { status: "online", mralPhase: "idle" });
       agents = patch(agents, "writer",  { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: { ...mockBroker(0), controllerEpoch: 15 }, pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      dispatch({ type: "audit", record: auditRec("writer", "Consuming incident · drafting failover postmortem · publishing to ops.actions.audit.v1", "consume") });
       particle(dispatch, "e-aud", "writer", "notification");
     }},
-    { ms: 7000, fn: () => {
+    { ms: 11000, fn: () => {
       agents = patch(agents, "writer",       { status: "online" });
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: { ...mockBroker(0), controllerEpoch: 15 }, pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Controller failover", message: "ℹ️ KRaft controller failover epoch 14→15 acknowledged, cluster healthy", scenarioId: "controller-failover" } });
+      dispatch({ type: "audit", record: auditRec("notification", "Slack #sre-alerts posted · ITSM ticket opened · email summary dispatched", "notification") });
       toast(dispatch, "✅ Controller failover handled — sending email summary…", "success");
       sendEmail(dispatch, "controller-failover", "KRaft Controller Failover", 0, 0, "kafka.ackControllerFailover", {
         approvedBy: "system",
@@ -406,7 +425,7 @@ function runControllerFailover(dispatch: DispatchFn): () => void {
         itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — KRaft controller failover self-healed`,
       });
     }},
-    { ms: 9000, fn: () => {
+    { ms: 14000, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
       dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: { ...mockBroker(0), controllerEpoch: 15 }, pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
     }},
@@ -421,30 +440,36 @@ function runShareGroupRebalance(dispatch: DispatchFn): () => void {
       dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       particle(dispatch, "e-req", "intake", "monitor");
       toast(dispatch, "🔄 Share-group rebalance initiated", "info");
+      dispatch({ type: "audit", record: auditRec("intake", "Published share-group-rebalance event to ops.requests.v1", "publish", "ops.requests.v1") });
     }},
-    { ms: 1500, fn: () => {
+    { ms: 2500, fn: () => {
       agents = patch(agents, "intake",  { status: "online" });
       agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
       dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(600), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "KIP-848 share-group rebalance detected: payments-share-group checkpoint needed") });
+      dispatch({ type: "audit", record: auditRec("monitor", "KIP-932 share-group rebalance detected: payments-share-group · 600 msgs behind", "reasoning") });
     }},
-    { ms: 3500, fn: () => {
+    { ms: 4500, fn: () => {
+      dispatch({ type: "audit", record: auditRec("monitor", "Confidence 91% · checkpointing offsets prevents duplicate delivery during rebalance", "reasoning") });
+    }},
+    { ms: 6000, fn: () => {
       agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(600), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Checkpointing share-group offsets via kafka.shareGroupCheckpoint") });
+      dispatch({ type: "audit", record: auditRec("monitor", "Executing kafka.checkpointShareGroup(shareGroupId=payments-share-group) · offset committed", "tool-call") });
       particle(dispatch, "e-inc", "monitor", "writer");
     }},
-    { ms: 5500, fn: () => {
+    { ms: 9000, fn: () => {
       agents = patch(agents, "monitor", { status: "online" });
       agents = patch(agents, "writer",  { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+      dispatch({ type: "audit", record: auditRec("writer", "Consuming incident · drafting share-group postmortem · publishing to ops.actions.audit.v1", "consume") });
       particle(dispatch, "e-aud", "writer", "notification");
     }},
-    { ms: 7500, fn: () => {
+    { ms: 12000, fn: () => {
       agents = patch(agents, "writer",       { status: "online" });
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Share-group rebalance", message: "✅ payments-share-group rebalance complete — offsets checkpointed", scenarioId: "share-group-rebalance" } });
+      dispatch({ type: "audit", record: auditRec("notification", "Slack #sre-alerts posted · ITSM ticket opened · email summary dispatched", "notification") });
       sendEmail(dispatch, "share-group", "Share Group Rebalance", 600, 0, "kafka.checkpointShareGroup", {
         approvedBy: "operator",
         reasoning: {
@@ -457,7 +482,7 @@ function runShareGroupRebalance(dispatch: DispatchFn): () => void {
         itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.checkpointShareGroup resolved share group lag`,
       });
     }},
-    { ms: 9500, fn: () => {
+    { ms: 15000, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
       dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
       toast(dispatch, "✅ Share-group rebalance handled", "success");
@@ -478,12 +503,12 @@ function runPartitionImbalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "intake",  { status: "online" });
       agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
       dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Partition imbalance: broker-3 holds 62% of leaders (threshold: 40%)") });
+      dispatch({ type: "audit", record: auditRec("monitor", "Partition imbalance: broker-3 holds 62% of leaders (threshold: 40%)", "reasoning") });
     }},
     { ms: 2500, fn: () => {
       agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Triggering preferred-leader election to rebalance partition leadership") });
+      dispatch({ type: "audit", record: auditRec("monitor", "Triggering preferred-leader election to rebalance partition leadership", "tool-call") });
       particle(dispatch, "e-inc", "monitor", "writer");
     }},
     { ms: 5000, fn: () => {
@@ -497,6 +522,7 @@ function runPartitionImbalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Partition imbalance resolved", message: "✅ Partition leadership rebalanced — broker distribution: 33%/34%/33%", scenarioId: "partition-imbalance" } });
+      dispatch({ type: "audit", record: auditRec("notification", "Slack #sre-alerts posted · ITSM ticket opened · email summary dispatched", "notification") });
       sendEmail(dispatch, "partition-imbalance", "Partition Imbalance", 0, 0, "kafka.rebalancePartitions", {
         approvedBy: "system",
         reasoning: {
@@ -532,7 +558,7 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "intake",  { status: "online" });
       agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
       dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(120), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Rebalance detected on payments-consumer — cross-correlating broker + JVM metrics") });
+      dispatch({ type: "audit", record: auditRec("monitor", "Rebalance detected on payments-consumer — cross-correlating broker + JVM metrics", "reasoning") });
       particle(dispatch, "e-metrics", "monitor", "monitor");
     }},
     { ms: 3000, fn: () => {
@@ -551,7 +577,7 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
         }
       });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "False-positive suppressed — routine rebalance, no action required") });
+      dispatch({ type: "audit", record: auditRec("monitor", "False-positive suppressed — routine rebalance, no action required", "tool-call") });
       toast(dispatch, "🛡️ False positive suppressed — no action needed", "success");
       particle(dispatch, "e-inc", "monitor", "writer");
     }},
@@ -566,6 +592,7 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Alert suppressed", message: "🛡️ Routine rebalance — false positive suppressed, SLO intact, no ticket opened", scenarioId: "benign-rebalance" } });
+      dispatch({ type: "audit", record: auditRec("notification", "Slack #sre-alerts posted · no ITSM ticket (false positive) · email summary dispatched", "notification") });
       toast(dispatch, "✅ False-positive suppression complete — email summary sent", "success");
       sendEmail(dispatch, "benign-rebalance", "False-Positive Suppression", 120, 0, "kafka.suppressRebalancePage", {
         approvedBy: "system",
