@@ -18,7 +18,7 @@ export async function POST(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as { kind?: ScenarioKind };
   if (!body.kind || !ALLOWED.has(body.kind)) {
     return NextResponse.json(
-      { error: "kind must be one of " + [...ALLOWED].join(", ") },
+      { error: "kind must be one of " + Array.from(ALLOWED).join(", ") },
       { status: 400 }
     );
   }
