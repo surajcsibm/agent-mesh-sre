@@ -299,133 +299,180 @@ function ApprovalGate({ approvals, onDecide }: {
   );
 }
 
-// ── Scenario-end modal (email sent / rejection notice) ────────────────────────
+// ── Scenario-end modal — mirrors the email template visually ─────────────────
+
+function DataRow({ label, children, last = false }: { label: string; children: React.ReactNode; last?: boolean }) {
+  return (
+    <tr className={last ? "" : "border-b border-[#e2e8f0]"}>
+      <td style={{ width: 148, padding: "9px 16px", fontSize: 12, color: "#64748b", fontWeight: 600, background: "#f8fafc", verticalAlign: "top" }}>
+        {label}
+      </td>
+      <td style={{ padding: "9px 16px", fontSize: 13, color: "#1e293b", lineHeight: 1.5 }}>
+        {children}
+      </td>
+    </tr>
+  );
+}
 
 function ScenarioEndModal({ data, onClose }: { data: EmailSummaryData; onClose: () => void }) {
-  if (!data.approved) {
-    // Rejection path
-    return (
-      <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4
-                      animate-[fadeIn_0.2s_ease-out]">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden animate-[slideUp_0.25s_ease-out]">
-          <div className="bg-red-50 border-b border-red-200 px-6 py-5 text-center">
-            <div className="text-4xl mb-2">🚫</div>
-            <h2 className="text-lg font-bold text-red-700">Action Rejected</h2>
-            <p className="text-sm text-red-600 mt-1">No further action was taken</p>
-          </div>
-          <div className="px-6 py-5">
-            <div className="bg-slate-50 rounded-xl border border-slate-200 px-4 py-3 mb-5 space-y-1.5">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500 font-medium">Scenario</span>
-                <span className="text-slate-700 font-semibold">{data.scenarioLabel}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500 font-medium">Proposed action</span>
-                <span className="text-slate-700 font-mono">{data.action}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500 font-medium">Cluster modified</span>
-                <span className="font-bold text-red-600">No</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-500 font-medium">Email sent</span>
-                <span className="font-bold text-slate-500">No</span>
-              </div>
-            </div>
-            <button onClick={onClose}
-              className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-sm transition-colors">
-              OK, understood
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const isRejected = !data.approved;
+  const ts = new Date().toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+  const confidence = data.reasoning ? `${Math.round(data.reasoning.confidence * 100)}%` : "—";
 
-  // Approved path — show email result
-  const emailOk    = data.sent;
-  const emailLabel = emailOk
-    ? "Sent to surajcs@gmail.com"
+  const MRAL_PHASES = [
+    { label: "Monitor", color: "#3b82f6" },
+    { label: "Reason",  color: "#8b5cf6" },
+    { label: "Act",     color: "#f97316" },
+    { label: "Learn",   color: "#22c55e" },
+  ];
+
+  const emailStatus = data.sent
+    ? "✉️ Sent to Admin/Stakeholders"
     : data.emailError === "smtp_not_configured"
-    ? "Skipped — SMTP not configured in Vercel"
+    ? "⚠️ Skipped — SMTP not set in Vercel"
     : data.emailError === "network_error"
-    ? "Failed — network error"
-    : `Failed — ${data.emailError ?? "unknown"}`;
+    ? "⚠️ Failed — network error"
+    : `⚠️ Failed — ${data.emailError ?? "unknown"}`;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4
-                    animate-[fadeIn_0.2s_ease-out]">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden animate-[slideUp_0.25s_ease-out]">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-6 py-5">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 bg-white/20 rounded-xl flex items-center justify-center text-2xl">
-              {emailOk ? "✉️" : "✅"}
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-white">Scenario Complete</h2>
-              <p className="text-xs text-blue-200 mt-0.5">{data.scenarioLabel}</p>
-            </div>
+    <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-center justify-center p-3
+                    animate-[fadeIn_0.2s_ease-out] overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[600px] overflow-hidden my-4
+                      animate-[slideUp_0.25s_ease-out]"
+           style={{ fontFamily: "'Segoe UI', Arial, sans-serif" }}>
+
+        {/* ── Header — matches email gradient ── */}
+        <div style={{ background: "linear-gradient(135deg,#1e3a8a 0%,#3b82f6 100%)", padding: "24px 28px" }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#fff", letterSpacing: -0.3 }}>
+            🤖 Agent Mesh SRE — Incident Summary
+          </div>
+          <div style={{ fontSize: 12, color: "#bfdbfe", marginTop: 5 }}>
+            Scenario: <strong style={{ color: "#fff" }}>{data.scenarioLabel}</strong>
+            &nbsp;·&nbsp;{ts}
+            {isRejected && (
+              <span style={{ marginLeft: 8, background: "#fca5a5", color: "#7f1d1d", padding: "2px 8px",
+                             borderRadius: 20, fontSize: 11, fontWeight: 700 }}>REJECTED</span>
+            )}
           </div>
         </div>
 
-        {/* Body */}
-        <div className="px-6 py-5">
-          <div className="rounded-xl border border-slate-200 overflow-hidden mb-5">
-            <table className="w-full text-sm">
+        {/* ── MRAL badges ── */}
+        <div style={{ padding: "14px 28px 0", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {MRAL_PHASES.map((p) => (
+            <span key={p.label} style={{
+              background: p.color + "18", color: p.color,
+              border: `1px solid ${p.color}40`, borderRadius: 20,
+              padding: "3px 12px", fontSize: 11, fontWeight: 700, letterSpacing: "0.5px",
+            }}>{p.label}</span>
+          ))}
+        </div>
+
+        <div style={{ padding: "0 28px 20px" }}>
+
+          {/* ── Reasoning ── */}
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase",
+                          letterSpacing: "0.8px", marginBottom: 8 }}>🧠 Monitor → Reason</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", fontSize: 13 }}>
               <tbody>
-                <tr className="border-b border-slate-100">
-                  <td className="px-4 py-2.5 text-xs text-slate-500 font-medium bg-slate-50 w-32">Action taken</td>
-                  <td className="px-4 py-2.5 text-xs font-mono text-slate-800">{data.action}</td>
-                </tr>
-                {data.lagBefore > 0 && (
-                  <tr className="border-b border-slate-100">
-                    <td className="px-4 py-2.5 text-xs text-slate-500 font-medium bg-slate-50">Lag resolved</td>
-                    <td className="px-4 py-2.5 text-xs font-bold text-slate-800">
-                      {data.lagBefore.toLocaleString()} → {data.lagAfter.toLocaleString()} msgs
-                    </td>
-                  </tr>
-                )}
-                <tr className="border-b border-slate-100">
-                  <td className="px-4 py-2.5 text-xs text-slate-500 font-medium bg-slate-50">Outcome</td>
-                  <td className="px-4 py-2.5">
-                    <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700
-                                     bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-0.5">
-                      ✅ SUCCESS
-                    </span>
-                  </td>
-                </tr>
-                {data.approvedBy && (
-                  <tr className="border-b border-slate-100">
-                    <td className="px-4 py-2.5 text-xs text-slate-500 font-medium bg-slate-50">Approved by</td>
-                    <td className="px-4 py-2.5 text-xs text-slate-700">{data.approvedBy}</td>
-                  </tr>
-                )}
-                <tr>
-                  <td className="px-4 py-2.5 text-xs text-slate-500 font-medium bg-slate-50">Email</td>
-                  <td className="px-4 py-2.5">
-                    <span className={clsx(
-                      "text-xs font-medium",
-                      emailOk ? "text-emerald-600" : "text-amber-600"
-                    )}>
-                      {emailOk ? "✉️ " : "⚠️ "}{emailLabel}
-                    </span>
-                  </td>
-                </tr>
+                <DataRow label="Root cause">{data.reasoning?.rootCause ?? "—"}</DataRow>
+                <DataRow label="Kafka feature">
+                  <span style={{ background: "#dbeafe", color: "#1d4ed8", padding: "1px 8px",
+                                 borderRadius: 4, fontSize: 11, fontWeight: 700 }}>
+                    {data.reasoning?.kafkaFeature ?? "—"}
+                  </span>
+                </DataRow>
+                <DataRow label="Confidence"><strong>{confidence}</strong></DataRow>
+                <DataRow label="Rationale" last>{data.reasoning?.rationale ?? "—"}</DataRow>
               </tbody>
             </table>
           </div>
 
-          {!emailOk && data.emailError === "smtp_not_configured" && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-xs text-amber-700">
-              <strong>To enable emails:</strong> add SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and
-              NOTIFICATION_EMAIL in Vercel → Settings → Environment Variables, then redeploy.
+          {/* ── Act ── */}
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase",
+                          letterSpacing: "0.8px", marginBottom: 8 }}>⚡ Act</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", fontSize: 13 }}>
+              <tbody>
+                <DataRow label="Action taken">
+                  <code style={{ fontSize: 12, color: "#0f172a" }}>{data.action}</code>
+                </DataRow>
+                <DataRow label="Outcome">
+                  {isRejected
+                    ? <span style={{ background: "#fef2f2", color: "#dc2626", border: "1px solid #fca5a5",
+                                     borderRadius: 20, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>🚫 REJECTED</span>
+                    : <span style={{ background: "#dcfce7", color: "#16a34a", border: "1px solid #86efac",
+                                     borderRadius: 20, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>✅ SUCCESS</span>
+                  }
+                </DataRow>
+                {!isRejected && data.lagBefore > 0 && (
+                  <DataRow label="Lag resolved">
+                    <strong>{data.lagBefore.toLocaleString()} → {data.lagAfter.toLocaleString()} messages</strong>
+                  </DataRow>
+                )}
+                <DataRow label={isRejected ? "Rejected by" : "Approved by"} last>
+                  {data.approvedBy ?? "operator"}
+                </DataRow>
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── Learn ── */}
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase",
+                          letterSpacing: "0.8px", marginBottom: 8 }}>📚 Learn</div>
+            <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "12px 14px" }}>
+              <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.6 }}>
+                {isRejected
+                  ? "No lesson recorded — action was rejected by operator. Cluster was not modified."
+                  : (data.lesson?.notes ?? "No lesson recorded.")}
+              </div>
+              {!isRejected && data.lesson?.adjustedThreshold && (
+                <div style={{ fontSize: 12, color: "#3b82f6", marginTop: 5, fontWeight: 600 }}>
+                  Adjusted threshold → {data.lesson.adjustedThreshold.toLocaleString()} msgs
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Notifications ── */}
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase",
+                          letterSpacing: "0.8px", marginBottom: 8 }}>🔔 Notifications</div>
+            {isRejected ? (
+              <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8,
+                            padding: "10px 14px", fontSize: 13, color: "#991b1b" }}>
+                🚫 No notifications sent — action was rejected. No Slack message or ITSM ticket created.
+              </div>
+            ) : (
+              <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: 8,
+                            padding: "10px 14px", fontSize: 13, color: "#92400e" }}>
+                {data.slackMessage && <div>💬 <strong>Slack</strong> #sre-alerts: {data.slackMessage}</div>}
+                {data.itsmTicket  && <div style={{ marginTop: 5 }}>🎫 <strong>ITSM</strong>: {data.itsmTicket}</div>}
+              </div>
+            )}
+          </div>
+
+          {/* ── Footer strip ── */}
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #e2e8f0",
+                        fontSize: 11, color: "#94a3b8", lineHeight: 1.6 }}>
+            This summary was automatically sent to <strong>Admin / Stakeholders</strong>
+            {" "}by the Agent Mesh SRE Notification Agent.
+            &nbsp;·&nbsp;
+            <span className={data.sent ? "text-emerald-600 font-medium" : "text-amber-600 font-medium"}
+                  style={{ fontSize: 11 }}>{emailStatus}</span>
+          </div>
+          {!data.sent && data.emailError === "smtp_not_configured" && (
+            <div className="mt-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-700">
+              <strong>Enable emails:</strong> add SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
+              NOTIFICATION_EMAIL in Vercel → Settings → Environment Variables → Redeploy.
             </div>
           )}
 
           <button onClick={onClose}
-            className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm transition-colors shadow-sm">
-            Got it
+            className="mt-5 w-full py-3 rounded-xl font-bold text-sm transition-colors shadow-sm"
+            style={{ background: isRejected ? "#1e293b" : "#2563eb", color: "#fff" }}>
+            {isRejected ? "Understood — no action taken" : "Got it"}
           </button>
         </div>
       </div>

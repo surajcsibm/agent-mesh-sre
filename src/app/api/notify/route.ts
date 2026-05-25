@@ -1,4 +1,4 @@
-// POST /api/notify — sends a scenario summary email.
+// POST /api/notify — sends a scenario summary email (approved OR rejected).
 // Called by the client-side simulation so email works on Vercel
 // (where the server-side mesh singleton is isolated per instance).
 import { sendAgentSummary } from "@/lib/emailer";
@@ -15,23 +15,41 @@ export async function POST(req: Request) {
     lagBefore?: number;
     lagAfter?: number;
     approvedBy?: string;
+    approved?: boolean;
+    reasoning?: {
+      rootCause: string;
+      confidence: number;
+      kafkaFeature: string;
+      rationale: string;
+      lessonsCited?: string[];
+    };
+    lesson?: {
+      notes: string;
+      adjustedThreshold?: number;
+    };
+    slackMessage?: string;
+    itsmTicket?: string;
   };
 
   const scenarioId    = body.scenarioId    ?? "demo";
   const scenarioLabel = body.scenarioLabel ?? "Demo Scenario";
-  const lagBefore     = body.lagBefore     ?? 4200;
+  const lagBefore     = body.lagBefore     ?? 0;
   const lagAfter      = body.lagAfter      ?? 0;
-  const approvedBy    = body.approvedBy    ?? "vp-engineering@stage";
+  const approvedBy    = body.approvedBy    ?? "operator";
   const actionTaken   = body.action        ?? "kafka.scaleConsumers";
+  const approved      = body.approved      !== false; // default true
+
+  // Use passed reasoning or generate a sensible default
+  const r = body.reasoning;
 
   const result = await sendAgentSummary({
     scenarioId,
     scenarioLabel,
     ts: Date.now(),
     reasoning: {
-      rootCause:         `Consumer lag spike detected (${lagBefore} msgs behind)`,
-      confidence:        0.94,
-      kafkaFeatureCited: "KIP-848 Share Groups",
+      rootCause:         r?.rootCause         ?? `Incident detected (${lagBefore} msgs behind)`,
+      confidence:        r?.confidence        ?? 0.90,
+      kafkaFeatureCited: r?.kafkaFeature      ?? "Kafka",
       rebalanceState:    "Rebalancing",
       controllerEpoch:   14,
       crossCorrelation: {
@@ -40,10 +58,10 @@ export async function POST(req: Request) {
       },
       recommendedAction: actionTaken,
       requiresApproval:  true,
-      rationale:         `Lag growth rate exceeded SLO threshold. ${actionTaken} resolved in ~10s.`,
-      lessonsCited:      ["lesson-003"],
+      rationale:         r?.rationale         ?? `${actionTaken} was proposed to resolve the incident.`,
+      lessonsCited:      r?.lessonsCited       ?? [],
     },
-    action: {
+    action: approved ? {
       approved:        true,
       approvedBy,
       outcome:         "success",
@@ -52,8 +70,16 @@ export async function POST(req: Request) {
       lagAfter,
       toolCalled:      actionTaken,
       clusterMutation: "ConsumerGroupScaleOut",
+    } : {
+      approved:        false,
+      approvedBy,
+      outcome:         "rejected",
+      detail:          `${actionTaken} was rejected by operator — no cluster changes made`,
+      lagBefore,
+      lagAfter,
+      toolCalled:      actionTaken,
     },
-    lesson: {
+    lesson: approved && body.lesson ? {
       id:                `lesson-${Date.now()}`,
       ts:                Date.now(),
       scenarioId,
@@ -61,11 +87,11 @@ export async function POST(req: Request) {
       effective:         true,
       lagBefore,
       lagAfter,
-      adjustedThreshold: 150,
-      notes:             "Threshold tightened from 300→150 msg/s for faster response next time.",
-    },
-    slackMessage: `*${scenarioLabel}* | Action: ${actionTaken} | Lag: ${lagBefore}→${lagAfter} | Approved by: ${approvedBy}`,
-    itsmTicket:   `INC-${Date.now().toString().slice(-5)} opened: ${actionTaken} — ${scenarioId}`,
+      adjustedThreshold: body.lesson.adjustedThreshold,
+      notes:             body.lesson.notes,
+    } : null,
+    slackMessage: body.slackMessage ?? `*${scenarioLabel}* | ${approved ? "✅ Resolved" : "🚫 Rejected"} | Action: ${actionTaken}`,
+    itsmTicket:   body.itsmTicket   ?? `INC-${Date.now().toString().slice(-5)}: ${actionTaken} — ${scenarioId}`,
     approvedBy,
   });
 

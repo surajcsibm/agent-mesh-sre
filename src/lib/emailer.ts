@@ -19,22 +19,31 @@ function buildHtml(p: AgentSummaryPayload): string {
   const kafkaFeature = p.reasoning?.kafkaFeatureCited ?? "—";
   const rootCause = p.reasoning?.rootCause ?? "—";
   const rationale = p.reasoning?.rationale ?? "—";
-  const action = p.action?.detail ?? "—";
+  const isRejected = p.action?.outcome === "rejected";
+  const action  = p.action?.detail ?? "—";
   const outcome = p.action?.outcome ?? "—";
-  const lagRow = p.action?.lagBefore != null
-    ? `<tr><td>Lag delta</td><td>${p.action.lagBefore.toLocaleString()} → ${(p.action.lagAfter ?? 0).toLocaleString()} msgs</td></tr>`
+  const outcomeColor  = isRejected ? "#dc2626" : "#16a34a";
+  const outcomeBg     = isRejected ? "#fef2f2" : "#dcfce7";
+  const outcomeBorder = isRejected ? "#fca5a5" : "#86efac";
+  const outcomeLabel  = isRejected ? "🚫 REJECTED" : "✅ SUCCESS";
+  const lagRow = (p.action?.lagBefore != null && !isRejected)
+    ? `<tr><td>Lag resolved</td><td><strong>${p.action.lagBefore.toLocaleString()} → ${(p.action.lagAfter ?? 0).toLocaleString()} messages</strong></td></tr>`
     : "";
-  const mutation = p.action?.clusterMutation
+  const mutation = (!isRejected && p.action?.clusterMutation)
     ? `<tr><td>Cluster mutation</td><td><code>${p.action.clusterMutation}</code></td></tr>`
     : "";
-  const approvedByRow = p.approvedBy
+  const approvedByRow = isRejected
+    ? `<tr><td>Rejected by</td><td>${p.approvedBy ?? "operator"}</td></tr>`
+    : p.approvedBy
     ? `<tr><td>Approved by</td><td>${p.approvedBy}</td></tr>`
     : `<tr><td>Approval</td><td>auto (no gate required)</td></tr>`;
   const lessonRows = p.reasoning?.lessonsCited?.length
     ? p.reasoning.lessonsCited.map((l) => `<li style="margin:4px 0;font-size:12px;color:#64748b;">${l}</li>`).join("")
     : "<li style='color:#94a3b8;font-size:12px;'>No prior lessons cited</li>";
-  const lessonNotes = p.lesson?.notes ?? "—";
-  const adjustedThreshold = p.lesson?.adjustedThreshold
+  const lessonNotes = isRejected
+    ? "No lesson recorded — action was rejected by operator. Cluster was not modified."
+    : (p.lesson?.notes ?? "—");
+  const adjustedThreshold = (!isRejected && p.lesson?.adjustedThreshold)
     ? `Adjusted threshold → ${p.lesson.adjustedThreshold.toLocaleString()} msgs`
     : "";
 
@@ -106,7 +115,7 @@ function buildHtml(p: AgentSummaryPayload): string {
       </tr>
       <tr style="border-bottom:1px solid #e2e8f0;">
         <td style="color:#64748b;font-weight:600;">Outcome</td>
-        <td><span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;">${outcome.toUpperCase()}</span></td>
+        <td><span style="background:${outcomeBg};color:${outcomeColor};border:1px solid ${outcomeBorder};padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700;">${outcomeLabel}</span></td>
       </tr>
       ${lagRow}
       ${mutation}
@@ -130,7 +139,8 @@ function buildHtml(p: AgentSummaryPayload): string {
     </div>
   </td></tr>
 
-  <!-- Notifications section -->
+  <!-- Notifications section (approved = Slack+ITSM, rejected = red notice) -->
+  ${!isRejected ? `
   <tr><td style="padding:20px 32px 0;">
     <div style="font-size:13px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px;">
       🔔 Notifications Sent
@@ -139,13 +149,19 @@ function buildHtml(p: AgentSummaryPayload): string {
       <div>💬 <strong>Slack</strong> #sre-alerts: ${p.slackMessage}</div>
       <div style="margin-top:6px;">🎫 <strong>ITSM</strong>: ${p.itsmTicket}</div>
     </div>
-  </td></tr>
+  </td></tr>` : `
+  <tr><td style="padding:20px 32px 0;">
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px 16px;font-size:13px;color:#991b1b;">
+      🚫 <strong>No notifications sent</strong> — action was rejected by operator. No Slack message or ITSM ticket created.
+    </div>
+  </td></tr>`}
 
   <!-- Footer -->
   <tr><td style="padding:24px 32px;border-top:1px solid #e2e8f0;margin-top:24px;">
     <div style="font-size:12px;color:#94a3b8;line-height:1.6;">
-      This email was sent automatically by the <strong>Agent Mesh SRE</strong> Notification Agent.<br>
-      All access is logged. Scenario: <code>${p.scenarioId}</code>
+      This email was sent automatically by the <strong>Agent Mesh SRE</strong> Notification Agent
+      to <strong>Admin / Stakeholders</strong>.<br>
+      All access is logged. Scenario: <code>${p.scenarioId}</code> · Status: <strong>${isRejected ? "REJECTED" : "RESOLVED"}</strong>
     </div>
   </td></tr>
 

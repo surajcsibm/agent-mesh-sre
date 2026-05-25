@@ -31,6 +31,20 @@ export interface EmailSummaryData {
   approvedBy?: string;
   sent: boolean;
   emailError?: string;
+  // Rich preview fields — mirror the email content so the popup looks identical
+  reasoning?: {
+    rootCause: string;
+    confidence: number;
+    kafkaFeature: string;
+    rationale: string;
+    lessonsCited?: string[];
+  };
+  lesson?: {
+    notes: string;
+    adjustedThreshold?: number;
+  };
+  slackMessage?: string;
+  itsmTicket?: string;
 }
 
 export type SimAction =
@@ -128,6 +142,15 @@ function toast(dispatch: DispatchFn, message: string, kind = "info") {
 
 // ── Email trigger ─────────────────────────────────────────────────────────────
 
+interface EmailMeta {
+  approvedBy?: string;
+  approved?: boolean;            // default true; pass false for rejection emails
+  reasoning?: EmailSummaryData["reasoning"];
+  lesson?: EmailSummaryData["lesson"];
+  slackMessage?: string;
+  itsmTicket?: string;
+}
+
 function sendEmail(
   dispatch: DispatchFn,
   scenarioId: string,
@@ -135,22 +158,35 @@ function sendEmail(
   lagBefore: number,
   lagAfter: number,
   action: string,
-  approvedBy = "operator",
+  meta: EmailMeta = {},
 ) {
+  const approved   = meta.approved !== false;  // default true
+  const approvedBy = meta.approvedBy ?? "operator";
+
   fetch("/api/notify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scenarioId, scenarioLabel, lagBefore, lagAfter, action, approvedBy }),
+    body: JSON.stringify({
+      scenarioId, scenarioLabel, lagBefore, lagAfter, action, approvedBy,
+      approved,
+      reasoning:    meta.reasoning,
+      lesson:       meta.lesson,
+      slackMessage: meta.slackMessage,
+      itsmTicket:   meta.itsmTicket,
+    }),
   })
     .then((r) => r.json())
     .then((data: { ok: boolean; error?: string }) => {
-      // Surface result as a scenario-end modal
       dispatch({
         type: "emailSummary",
         data: {
           scenarioLabel, scenarioId, action,
-          lagBefore, lagAfter, approved: true, approvedBy,
+          lagBefore, lagAfter, approved, approvedBy,
           sent: data.ok, emailError: data.ok ? undefined : data.error,
+          reasoning:    meta.reasoning,
+          lesson:       meta.lesson,
+          slackMessage: meta.slackMessage,
+          itsmTicket:   meta.itsmTicket,
         },
       });
     })
@@ -159,8 +195,9 @@ function sendEmail(
         type: "emailSummary",
         data: {
           scenarioLabel, scenarioId, action,
-          lagBefore, lagAfter, approved: true, approvedBy,
+          lagBefore, lagAfter, approved, approvedBy,
           sent: false, emailError: "network_error",
+          reasoning: meta.reasoning, lesson: meta.lesson,
         },
       });
     });
@@ -270,7 +307,19 @@ function runLagSpike(dispatch: DispatchFn): () => void {
           const slackNotif: NotificationRecord = { id: uid(), ts: Date.now(), channel: "slack", title: "Lag spike resolved", message: "✅ payments-consumer lag spike resolved · lag 4200→0 · scaled N→N+2", scenarioId: "lag-spike" };
           dispatch({ type: "notification", record: slackNotif });
           toast(dispatch, "📢 Slack + ITSM notification sent — sending email summary…", "success");
-          sendEmail(dispatch, "lag-spike", "Consumer Lag Spike", 4200, 0, "kafka.scaleConsumers");
+          sendEmail(dispatch, "lag-spike", "Consumer Lag Spike", 4200, 0, "kafka.scaleConsumers", {
+            approvedBy: "operator",
+            approved: true,
+            reasoning: {
+              rootCause: "payments-consumer lag spike: 4,200 messages behind across 3 partitions",
+              confidence: 0.94, kafkaFeature: "KIP-848 Share Groups",
+              rationale: "Lag growth rate 420 msg/s exceeded SLO threshold (150 msg/s). Adding 2 consumers resolved lag in ~10s.",
+              lessonsCited: ["lesson-003"],
+            },
+            lesson: { notes: "Scale-out resolved lag in 9s. Threshold tightened 300→150 msg/s.", adjustedThreshold: 150 },
+            slackMessage: "✅ payments-consumer lag spike resolved · lag 4,200→0 · scaled N→N+2",
+            itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.scaleConsumers resolved consumer lag spike`,
+          });
         }, 3000));
 
         allTimers.push(setTimeout(() => {
@@ -294,15 +343,15 @@ function runLagSpike(dispatch: DispatchFn): () => void {
         agents = baseAgents(); // reset all agents to online/idle
         dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
         dispatch({ type: "audit", record: auditRec("monitor", "Action REJECTED by operator — kafka.scaleConsumers not executed, scenario aborted") });
-        // Show rejection modal (no email sent)
-        dispatch({
-          type: "emailSummary",
-          data: {
-            scenarioLabel: "Consumer Lag Spike",
-            scenarioId: "lag-spike",
-            action: "kafka.scaleConsumers",
-            lagBefore: 4200, lagAfter: 4200,
-            approved: false, sent: false,
+        // Send rejection notification email and show popup
+        sendEmail(dispatch, "lag-spike", "Consumer Lag Spike", 4200, 4200, "kafka.scaleConsumers", {
+          approvedBy: "operator",
+          approved: false,
+          reasoning: {
+            rootCause: "payments-consumer lag spike: 4,200 messages behind across 3 partitions",
+            confidence: 0.94, kafkaFeature: "KIP-848 Share Groups",
+            rationale: "Lag growth rate 420 msg/s exceeded SLO threshold (150 msg/s). Action was rejected by operator — no cluster changes made.",
+            lessonsCited: ["lesson-003"],
           },
         });
       }
@@ -345,7 +394,17 @@ function runControllerFailover(dispatch: DispatchFn): () => void {
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: { ...mockBroker(0), controllerEpoch: 15 }, pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Controller failover", message: "ℹ️ KRaft controller failover epoch 14→15 acknowledged, cluster healthy", scenarioId: "controller-failover" } });
       toast(dispatch, "✅ Controller failover handled — sending email summary…", "success");
-      sendEmail(dispatch, "controller-failover", "KRaft Controller Failover", 0, 0, "kafka.acknowledgeFailover");
+      sendEmail(dispatch, "controller-failover", "KRaft Controller Failover", 0, 0, "kafka.ackControllerFailover", {
+        approvedBy: "system",
+        reasoning: {
+          rootCause: "KRaft controller leadership transferred: broker-1 → broker-2 (epoch 14→15)",
+          confidence: 0.99, kafkaFeature: "KRaft Consensus Protocol",
+          rationale: "Election completed in 220ms. No partition reassignment required. Cluster healthy.",
+        },
+        lesson: { notes: "KRaft failover handled automatically. No consumer impact. Election latency within SLO." },
+        slackMessage: "ℹ️ KRaft controller failover epoch 14→15 acknowledged — cluster healthy",
+        itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — KRaft controller failover self-healed`,
+      });
     }},
     { ms: 9000, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
@@ -386,7 +445,17 @@ function runShareGroupRebalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Share-group rebalance", message: "✅ payments-share-group rebalance complete — offsets checkpointed", scenarioId: "share-group-rebalance" } });
-      sendEmail(dispatch, "share-group", "Share Group Rebalance", 600, 0, "kafka.shareGroupCheckpoint");
+      sendEmail(dispatch, "share-group", "Share Group Rebalance", 600, 0, "kafka.checkpointShareGroup", {
+        approvedBy: "operator",
+        reasoning: {
+          rootCause: "KIP-932 share group rebalance detected on payments-share-group (600 msgs behind)",
+          confidence: 0.91, kafkaFeature: "KIP-932 Share Groups",
+          rationale: "Share group rebalance triggered by consumer join. Checkpointing offsets prevents duplicate delivery.",
+        },
+        lesson: { notes: "Share group checkpoint prevented duplicate message delivery during rebalance." },
+        slackMessage: "✅ Share group rebalance resolved · offsets checkpointed · lag 600→0",
+        itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.checkpointShareGroup resolved share group lag`,
+      });
     }},
     { ms: 9500, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
@@ -428,7 +497,17 @@ function runPartitionImbalance(dispatch: DispatchFn): () => void {
       agents = patch(agents, "notification", { status: "acting" });
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Partition imbalance resolved", message: "✅ Partition leadership rebalanced — broker distribution: 33%/34%/33%", scenarioId: "partition-imbalance" } });
-      sendEmail(dispatch, "partition-imbalance", "Partition Imbalance", 0, 0, "kafka.rebalancePartitions");
+      sendEmail(dispatch, "partition-imbalance", "Partition Imbalance", 0, 0, "kafka.rebalancePartitions", {
+        approvedBy: "system",
+        reasoning: {
+          rootCause: "Partition imbalance detected: broker-0 carrying 60% of partition load",
+          confidence: 0.88, kafkaFeature: "KIP-848 Cooperative Rebalancing",
+          rationale: "Load imbalance detected during cooperative rebalance. Alert suppressed — imbalance self-correcting.",
+        },
+        lesson: { notes: "Partition rebalance was self-correcting. No manual intervention needed." },
+        slackMessage: "ℹ️ Partition imbalance rebalance completed — load redistributed across brokers",
+        itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.rebalancePartitions resolved load imbalance`,
+      });
     }},
     { ms: 9000, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
@@ -488,7 +567,17 @@ function runBenignRebalance(dispatch: DispatchFn): () => void {
       dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
       dispatch({ type: "notification", record: { id: uid(), ts: Date.now(), channel: "slack", title: "Alert suppressed", message: "🛡️ Routine rebalance — false positive suppressed, SLO intact, no ticket opened", scenarioId: "benign-rebalance" } });
       toast(dispatch, "✅ False-positive suppression complete — email summary sent", "success");
-      sendEmail(dispatch, "benign-rebalance", "False-Positive Suppression", 120, 0, "suppress-alert");
+      sendEmail(dispatch, "benign-rebalance", "False-Positive Suppression", 120, 0, "kafka.suppressRebalancePage", {
+        approvedBy: "system",
+        reasoning: {
+          rootCause: "Rebalance alert fired during expected KIP-848 cooperative rebalance (120 msgs lag)",
+          confidence: 0.97, kafkaFeature: "KIP-848 Cooperative Rebalancing",
+          rationale: "Lag within cooperative rebalance tolerance (< 300 msgs). Alert is a false positive — suppressing page.",
+        },
+        lesson: { notes: "False-positive suppression worked correctly. Rebalance lag < 300 msgs is within tolerance." },
+        slackMessage: "🔇 Alert suppressed — benign cooperative rebalance in progress (lag 120, within tolerance)",
+        itsmTicket: `INC-${Date.now().toString().slice(-5)} closed — kafka.suppressRebalancePage — false positive suppressed`,
+      });
     }},
     { ms: 9000, fn: () => {
       agents = patch(agents, "notification", { status: "online" });
