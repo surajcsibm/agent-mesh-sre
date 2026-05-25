@@ -1563,21 +1563,57 @@ export default function Dashboard() {
 
   // ── Floating overlay states ────────────────────────────────────────────────
   const [brokerOpen, setBrokerOpen]           = useState(false);
-  const [summaryHistory, setSummaryHistory]   = useState<EmailSummaryData[]>([]);
+
+  // Persistent scenario history — survives page refreshes via localStorage
+  const [summaryHistory, setSummaryHistory]   = useState<EmailSummaryData[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const saved = localStorage.getItem("sre-scenario-history");
+      return saved ? (JSON.parse(saved) as EmailSummaryData[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const [viewHistorySummary, setViewHistorySummary] = useState<EmailSummaryData | null>(null);
 
+  // Canvas height — +/- resizable
+  const [canvasHeight, setCanvasHeight] = useState(580);
+
+  // Persist history to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem("sre-scenario-history", JSON.stringify(summaryHistory));
+    } catch { /* quota exceeded — ignore */ }
+  }, [summaryHistory]);
+
   // Capture completed scenario to history ───────────────────────────────────
+  // Also hydrate liveEvents from the current auditLog if the scenario didn't
+  // explicitly collect them (most scenarios other than lag-spike).
   useEffect(() => {
     if (!state.emailSummary) return;
     setSummaryHistory(prev => {
+      const raw = state.emailSummary!;
+      // Hydrate liveEvents from auditLog when the scenario didn't populate them
+      const hydrated: EmailSummaryData =
+        raw.liveEvents && raw.liveEvents.length > 0
+          ? raw
+          : {
+              ...raw,
+              liveEvents: state.auditLog.slice(-40).map(r => ({
+                type:    r.type,
+                agent:   r.agent,
+                summary: r.summary,
+                ts:      r.ts,
+              })),
+            };
       if (
         prev.length > 0 &&
-        prev[0].scenarioLabel === state.emailSummary!.scenarioLabel &&
-        prev[0].action        === state.emailSummary!.action
+        prev[0].scenarioLabel === hydrated.scenarioLabel &&
+        prev[0].action        === hydrated.action
       ) return prev;
-      return [state.emailSummary!, ...prev].slice(0, 14);
+      return [hydrated, ...prev].slice(0, 20);
     });
-  }, [state.emailSummary]);
+  }, [state.emailSummary, state.auditLog]);
 
   const handleTopicSave = (updated: KafkaTopic) => {
     const prev = topics.find((t) => t.id === updated.id)!;
@@ -1789,10 +1825,11 @@ export default function Dashboard() {
           {/* 1 ── Agent canvas — large, with floating overlays ── */}
           <div className="shrink-0 relative"
                style={{
-                 height: 580,
+                 height: canvasHeight,
                  backgroundImage: "radial-gradient(circle, #b8cfe0 1.5px, transparent 1.5px)",
                  backgroundSize: "28px 28px",
                  background: "radial-gradient(circle, #b8cfe0 1.5px, transparent 1.5px) #eef4f9",
+                 transition: "height 0.25s ease",
                }}>
             <AgentCanvas
               agents={state.agents}
@@ -1820,6 +1857,40 @@ export default function Dashboard() {
             >
               {brokerOpen ? "× Close" : "⬡ Broker Info"}
             </button>
+
+            {/* ── Canvas resize +/- buttons ────────────────────────── */}
+            <div style={{
+              position: "absolute", top: 10, right: 10, zIndex: 10,
+              display: "flex", gap: 4,
+            }}>
+              {[
+                { label: "−", title: "Shrink canvas", delta: -80, disabled: canvasHeight <= 380 },
+                { label: "+", title: "Expand canvas", delta:  80, disabled: canvasHeight >= 960 },
+              ].map(btn => (
+                <button
+                  key={btn.label}
+                  title={btn.title}
+                  disabled={btn.disabled}
+                  onClick={() => setCanvasHeight(h => Math.min(960, Math.max(380, h + btn.delta)))}
+                  style={{
+                    width: 28, height: 28,
+                    background: "rgba(30,58,95,0.78)",
+                    color: btn.disabled ? "rgba(255,255,255,0.3)" : "#fff",
+                    border: "1px solid rgba(147,197,253,0.35)",
+                    borderRadius: 8,
+                    fontSize: 16, fontWeight: 700,
+                    lineHeight: "1",
+                    cursor: btn.disabled ? "default" : "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    backdropFilter: "blur(6px)",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.20)",
+                    transition: "background 0.15s",
+                  }}
+                >
+                  {btn.label}
+                </button>
+              ))}
+            </div>
 
             {/* ── Broker details popup ────────────────────────────── */}
             {brokerOpen && state.broker && (
@@ -1996,7 +2067,19 @@ export default function Dashboard() {
       {/* Overlays */}
       <ApprovalGate approvals={state.pendingApprovals} onDecide={approve} />
       {state.emailSummary && (
-        <ScenarioEndModal data={state.emailSummary} onClose={dismissEmailSummary} />
+        <ScenarioEndModal
+          data={
+            state.emailSummary.liveEvents && state.emailSummary.liveEvents.length > 0
+              ? state.emailSummary
+              : {
+                  ...state.emailSummary,
+                  liveEvents: state.auditLog.slice(-40).map(r => ({
+                    type: r.type, agent: r.agent, summary: r.summary, ts: r.ts,
+                  })),
+                }
+          }
+          onClose={dismissEmailSummary}
+        />
       )}
       {viewHistorySummary && (
         <ScenarioEndModal data={viewHistorySummary} onClose={() => setViewHistorySummary(null)} />

@@ -8,17 +8,17 @@ import type { AgentState, MralPhase } from "@/lib/types";
 
 // ── Agent accent colours (per wireframe) ─────────────────────────────────────
 const ACCENT: Record<string, string> = {
-  intake:       "#1D9E75",
-  monitor:      "#7c3aed",
-  writer:       "#1D9E75",
-  notification: "#f97316",
+  intake:       "#1D9E75",   // emerald green
+  monitor:      "#7c3aed",   // violet
+  writer:       "#0891b2",   // cyan-600 — distinct from intake
+  notification: "#f97316",   // orange
 };
 
 // Light background tints per agent (very soft, stays legible)
 const BG_LIGHT: Record<string, string> = {
   intake:       "#e6f5f0",   // soft emerald
   monitor:      "#ede9fe",   // soft violet
-  writer:       "#ecfdf5",   // soft mint
+  writer:       "#ecfeff",   // soft cyan
   notification: "#fff7ed",   // soft orange
 };
 
@@ -132,24 +132,26 @@ function AgentNode({ data: rawData }: NodeProps<Node<AgentNodeData>>) {
       <div style={{ position: "absolute", bottom: 18 }}>
         {!crashed ? (
           <button
-            onClick={() => setConfirmKill(true)}
+            onClick={(e) => { e.stopPropagation(); setConfirmKill(true); }}
             style={{
               fontSize: 9, fontWeight: 700, padding: "2px 10px",
               background: "rgba(220,38,38,0.07)", color: "#dc2626",
               border: "1px solid rgba(220,38,38,0.25)", borderRadius: 20,
               cursor: "pointer", letterSpacing: "0.3px",
+              pointerEvents: "all",
             }}
           >
             Kill
           </button>
         ) : (
           <button
-            onClick={() => onRestart(agent.id)}
+            onClick={(e) => { e.stopPropagation(); onRestart(agent.id); }}
             style={{
               fontSize: 9, fontWeight: 700, padding: "2px 10px",
               background: "rgba(29,158,117,0.10)", color: "#1D9E75",
               border: "1px solid rgba(29,158,117,0.30)", borderRadius: 20,
               cursor: "pointer",
+              pointerEvents: "all",
             }}
           >
             Restart
@@ -159,21 +161,24 @@ function AgentNode({ data: rawData }: NodeProps<Node<AgentNodeData>>) {
 
       {/* Kill confirmation popup — floats just below the circle */}
       {confirmKill && (
-        <div style={{
-          position: "absolute",
-          top: "calc(100% + 10px)",
-          left: "50%",
-          transform: "translateX(-50%)",
-          zIndex: 999,
-          background: "#fff",
-          border: "2px solid #ef4444",
-          borderRadius: 14,
-          padding: "12px 16px",
-          boxShadow: "0 8px 28px rgba(220,38,38,0.20)",
-          minWidth: 160,
-          textAlign: "center",
-          animation: "slideDown 0.15s ease-out",
-        }}>
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: "calc(100% + 10px)",
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 999,
+            background: "#fff",
+            border: "2px solid #ef4444",
+            borderRadius: 14,
+            padding: "12px 16px",
+            boxShadow: "0 8px 28px rgba(220,38,38,0.20)",
+            minWidth: 160,
+            textAlign: "center",
+            animation: "slideDown 0.15s ease-out",
+            pointerEvents: "all",
+          }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", marginBottom: 6 }}>
             Kill {DISPLAY_NAME[agent.id] ?? agent.id}?
           </div>
@@ -182,21 +187,23 @@ function AgentNode({ data: rawData }: NodeProps<Node<AgentNodeData>>) {
           </div>
           <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
             <button
-              onClick={() => { onKill(agent.id); setConfirmKill(false); }}
+              onClick={(e) => { e.stopPropagation(); onKill(agent.id); setConfirmKill(false); }}
               style={{
                 fontSize: 11, fontWeight: 700, padding: "4px 14px",
                 background: "#dc2626", color: "#fff",
                 border: "none", borderRadius: 8, cursor: "pointer",
+                pointerEvents: "all",
               }}
             >
               Yes, Kill
             </button>
             <button
-              onClick={() => setConfirmKill(false)}
+              onClick={(e) => { e.stopPropagation(); setConfirmKill(false); }}
               style={{
                 fontSize: 11, fontWeight: 600, padding: "4px 12px",
                 background: "#f1f5f9", color: "#64748b",
                 border: "1px solid #dce5ef", borderRadius: 8, cursor: "pointer",
+                pointerEvents: "all",
               }}
             >
               Cancel
