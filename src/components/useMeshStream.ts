@@ -5,7 +5,7 @@ import type {
   AgentState, BrokerState, MralPhase, ApprovalRequest,
   AuditRecord, LessonRecord, NotificationRecord, BusEvent,
 } from "@/lib/types";
-import { runClientScenario, type ScenarioKey, type SimAction } from "@/lib/client-sim";
+import { runClientScenario, resolvePendingApproval, type ScenarioKey, type SimAction } from "@/lib/client-sim";
 
 export interface MeshClientState {
   agents: AgentState[];
@@ -136,7 +136,11 @@ export function useMeshStream() {
   };
 
   const approve = async (id: string, decision: "approve" | "reject") => {
-    await fetch("/api/mesh/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, decision }) });
+    // Route the decision into the client-side simulation immediately so the
+    // scenario branches on approve vs reject without waiting for the server.
+    resolvePendingApproval(decision === "approve");
+    // Also notify the server (no-op on Vercel serverless, but keeps real-mode in sync).
+    fetch("/api/mesh/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, decision }) }).catch(() => {});
   };
 
   const agentAction = async (agentId: string, action: "kill" | "restart") => {

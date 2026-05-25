@@ -43,6 +43,20 @@ interface SimStatePayload {
   notifications?: NotificationRecord[];
 }
 
+// ── Approval gate ─────────────────────────────────────────────────────────────
+// When the simulation creates a pending approval it registers a callback here.
+// useMeshStream calls resolvePendingApproval() when the user clicks Approve/Reject.
+
+let _pendingApprovalCallback: ((approved: boolean) => void) | null = null;
+
+/** Called by useMeshStream's approve() so the sim can branch on the decision. */
+export function resolvePendingApproval(approved: boolean) {
+  if (_pendingApprovalCallback) {
+    _pendingApprovalCallback(approved);
+    _pendingApprovalCallback = null;
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 let _toastId = 1000;
@@ -124,112 +138,124 @@ function schedule(steps: Step[]): () => void {
 
 function runLagSpike(dispatch: DispatchFn): () => void {
   let agents = baseAgents();
-  const broker = mockBroker(0);
+  const allTimers: ReturnType<typeof setTimeout>[] = [];
 
-  return schedule([
-    // t=0  intake publishes request
-    { ms: 0, fn: () => {
-      agents = patch(agents, "intake", { status: "acting", mralPhase: "act" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("intake", "Published simulate-lag-spike to ops.requests.v1", "ops.requests.v1") });
-      particle(dispatch, "e-req", "intake", "monitor");
-    }},
-    { ms: 800, fn: () => {
-      agents = patch(agents, "intake", { status: "online", mralPhase: "idle" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(1800), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-    }},
+  // Helper: schedule a step and track the timer for cleanup
+  function t(ms: number, fn: () => void) {
+    allTimers.push(setTimeout(fn, ms));
+  }
 
-    // t=1.5s  monitor detects lag spike
-    { ms: 1500, fn: () => {
-      agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(4200), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Consumer lag spike detected on payments-consumer (4,200 msgs behind)", "ops.kafka.metrics.v1") });
-      particle(dispatch, "e-metrics", "monitor", "monitor");
-    }},
+  // Steps 1–3: up to the approval gate
+  t(0, () => {
+    agents = patch(agents, "intake", { status: "acting", mralPhase: "act" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("intake", "Published simulate-lag-spike to ops.requests.v1", "ops.requests.v1") });
+    particle(dispatch, "e-req", "intake", "monitor");
+  });
 
-    // t=3s  reasoning complete, awaiting approval
-    { ms: 3000, fn: () => {
-      const toolCall: MCPToolCall = {
-        jsonrpc: "2.0", id: uid(), method: "tools/call",
-        params: { name: "kafka.scaleConsumers", arguments: { group: "payments-consumer", delta: 2, reason: "Lag spike: 4200 msgs" } },
-      };
-      const approval: ApprovalRequest = {
-        id: uid(), ts: Date.now(), createdAt: Date.now(),
-        agent: "monitor", proposedBy: "monitor-agent",
-        toolCall, scenarioId: "lag-spike",
-        reason: "Scale payments-consumer from N→N+2 to drain 4,200-msg backlog",
-        status: "pending",
-      };
-      agents = patch(agents, "monitor", { status: "awaiting-approval", mralPhase: "awaiting",
-        lastReasoning: {
-          rootCause: "payments-consumer lag spike: 4,200 messages behind across 3 partitions",
-          confidence: 0.94,
-          kafkaFeatureCited: "KIP-848 Share Groups",
-          rebalanceState: "Rebalancing",
-          controllerEpoch: 14,
-          crossCorrelation: { brokers: "healthy", jvmHeap: "68%", networkInRate: "↑ 2.1×", rebalanceInProgress: true },
-          recommendedAction: "kafka.scaleConsumers(group=payments-consumer, delta=2)",
-          requiresApproval: true,
-          rationale: "Lag growth rate 420 msg/s exceeds SLO threshold (150 msg/s). Rebalance in progress adds risk; adding 2 consumers will absorb spike within ~10s.",
-          lessonsCited: ["lesson-003"],
-        }
-      });
-      dispatch({ type: "state", payload: { agents, mralPhase: "awaiting", broker: mockBroker(4200), pendingApprovals: [approval], incidentQueueDepth: 1, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Awaiting approval: kafka.scaleConsumers (policy-gated, human-in-the-loop)") });
-      toast(dispatch, "⏳ Approval required: kafka.scaleConsumers — check the approval panel", "warning");
-    }},
+  t(800, () => {
+    agents = patch(agents, "intake", { status: "online", mralPhase: "idle" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "monitor", broker: mockBroker(1800), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+  });
 
-    // t=5s  auto-approve for demo
-    { ms: 5000, fn: () => {
-      agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(4200), pendingApprovals: [], incidentQueueDepth: 1, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Approved by vp-engineering@stage · executing kafka.scaleConsumers") });
-      toast(dispatch, "✅ Approved — scaling consumers", "info");
-      particle(dispatch, "e-inc", "monitor", "writer");
-    }},
+  t(1500, () => {
+    agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "reason" });
+    dispatch({ type: "state", payload: { agents, mralPhase: "reason", broker: mockBroker(4200), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("monitor", "Consumer lag spike detected on payments-consumer (4,200 msgs behind)", "ops.kafka.metrics.v1") });
+    particle(dispatch, "e-metrics", "monitor", "monitor");
+  });
 
-    // t=6.5s  lag draining, writer activated
-    { ms: 6500, fn: () => {
-      agents = patch(agents, "monitor", { status: "online", mralPhase: "idle",
-        lastAction: { approved: true, approvedBy: "vp-engineering@stage", outcome: "success", detail: "Scaled payments-consumer N→N+2; lag draining at 680 msg/s", lagBefore: 4200, lagAfter: 180, toolCalled: "kafka.scaleConsumers", clusterMutation: "ConsumerGroupScaleOut" }
-      });
-      agents = patch(agents, "writer", { status: "acting", mralPhase: "act" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(180), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("writer", "Drafting incident postmortem for lag-spike scenario", "ops.actions.audit.v1") });
-      particle(dispatch, "e-aud", "writer", "notification");
-    }},
+  // t=3s  reasoning complete — pause and wait for human decision
+  t(3000, () => {
+    const toolCall: MCPToolCall = {
+      jsonrpc: "2.0", id: uid(), method: "tools/call",
+      params: { name: "kafka.scaleConsumers", arguments: { group: "payments-consumer", delta: 2, reason: "Lag spike: 4200 msgs" } },
+    };
+    const approval: ApprovalRequest = {
+      id: uid(), ts: Date.now(), createdAt: Date.now(),
+      agent: "monitor", proposedBy: "monitor-agent",
+      toolCall, scenarioId: "lag-spike",
+      reason: "Scale payments-consumer from N→N+2 to drain 4,200-msg backlog",
+      status: "pending",
+    };
+    agents = patch(agents, "monitor", { status: "awaiting-approval", mralPhase: "awaiting",
+      lastReasoning: {
+        rootCause: "payments-consumer lag spike: 4,200 messages behind across 3 partitions",
+        confidence: 0.94,
+        kafkaFeatureCited: "KIP-848 Share Groups",
+        rebalanceState: "Rebalancing",
+        controllerEpoch: 14,
+        crossCorrelation: { brokers: "healthy", jvmHeap: "68%", networkInRate: "↑ 2.1×", rebalanceInProgress: true },
+        recommendedAction: "kafka.scaleConsumers(group=payments-consumer, delta=2)",
+        requiresApproval: true,
+        rationale: "Lag growth rate 420 msg/s exceeds SLO threshold (150 msg/s). Rebalance in progress adds risk; adding 2 consumers will absorb spike within ~10s.",
+        lessonsCited: ["lesson-003"],
+      }
+    });
+    dispatch({ type: "state", payload: { agents, mralPhase: "awaiting", broker: mockBroker(4200), pendingApprovals: [approval], incidentQueueDepth: 1, scenarioRunning: true } });
+    dispatch({ type: "audit", record: auditRec("monitor", "Awaiting approval: kafka.scaleConsumers (policy-gated, human-in-the-loop)") });
+    toast(dispatch, "⏳ Approval required: kafka.scaleConsumers — check the approval panel", "warning");
 
-    // t=8s  notification agent fires + send real email
-    { ms: 8000, fn: () => {
-      agents = patch(agents, "writer", { status: "online", mralPhase: "idle" });
-      agents = patch(agents, "notification", { status: "acting", mralPhase: "act" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("notification", "Posting to #sre-alerts Slack & opening ITSM ticket", "ops.notifications.v1") });
-      const slackNotif: NotificationRecord = { id: uid(), ts: Date.now(), channel: "slack", title: "Lag spike resolved", message: "✅ payments-consumer lag spike resolved · lag 4200→0 · scaled N→N+2", scenarioId: "lag-spike" };
-      dispatch({ type: "notification", record: slackNotif });
-      toast(dispatch, "📢 Slack + ITSM notification sent — sending email summary…", "success");
-      // Trigger real email via server-side API (works on Vercel)
-      sendEmail("lag-spike", "Consumer Lag Spike", 4200, 0, "kafka.scaleConsumers");
-    }},
+    // Register callback — will fire when user clicks Approve or Reject
+    _pendingApprovalCallback = (approved: boolean) => {
+      if (approved) {
+        // ── APPROVED PATH ──────────────────────────────────────────────────────
+        allTimers.push(setTimeout(() => {
+          agents = patch(agents, "monitor", { status: "acting", mralPhase: "act" });
+          dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(4200), pendingApprovals: [], incidentQueueDepth: 1, scenarioRunning: true } });
+          dispatch({ type: "audit", record: auditRec("monitor", "Approved by operator · executing kafka.scaleConsumers") });
+          toast(dispatch, "✅ Approved — scaling consumers", "info");
+          particle(dispatch, "e-inc", "monitor", "writer");
+        }, 0));
 
-    // t=9.5s  learn phase
-    { ms: 9500, fn: () => {
-      agents = patch(agents, "notification", { status: "online", mralPhase: "idle" });
-      agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "learn" });
-      dispatch({ type: "state", payload: { agents, mralPhase: "learn", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
-      dispatch({ type: "audit", record: auditRec("monitor", "Recording lesson: scale-out threshold adjusted → 150 msg/s") });
-      particle(dispatch, "e-learn", "monitor", "monitor");
-    }},
+        allTimers.push(setTimeout(() => {
+          agents = patch(agents, "monitor", { status: "online", mralPhase: "idle",
+            lastAction: { approved: true, approvedBy: "operator", outcome: "success", detail: "Scaled payments-consumer N→N+2; lag draining at 680 msg/s", lagBefore: 4200, lagAfter: 180, toolCalled: "kafka.scaleConsumers", clusterMutation: "ConsumerGroupScaleOut" }
+          });
+          agents = patch(agents, "writer", { status: "acting", mralPhase: "act" });
+          dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(180), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+          dispatch({ type: "audit", record: auditRec("writer", "Drafting incident postmortem for lag-spike scenario", "ops.actions.audit.v1") });
+          particle(dispatch, "e-aud", "writer", "notification");
+        }, 1500));
 
-    // t=11s  all idle
-    { ms: 11000, fn: () => {
-      agents = patch(agents, "monitor", { status: "online", mralPhase: "idle",
-        lastLesson: { id: uid(), ts: Date.now(), scenarioId: "lag-spike", actionTaken: "kafka.scaleConsumers(delta=2)", effective: true, lagBefore: 4200, lagAfter: 0, adjustedThreshold: 150, notes: "Scale-out resolved lag in 9s. Threshold tightened from 300→150 msg/s for faster response." }
-      });
-      dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
-      toast(dispatch, "✅ Scenario complete — lesson recorded", "success");
-    }},
-  ]);
+        allTimers.push(setTimeout(() => {
+          agents = patch(agents, "writer", { status: "online", mralPhase: "idle" });
+          agents = patch(agents, "notification", { status: "acting", mralPhase: "act" });
+          dispatch({ type: "state", payload: { agents, mralPhase: "act", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+          dispatch({ type: "audit", record: auditRec("notification", "Posting to #sre-alerts Slack & opening ITSM ticket", "ops.notifications.v1") });
+          const slackNotif: NotificationRecord = { id: uid(), ts: Date.now(), channel: "slack", title: "Lag spike resolved", message: "✅ payments-consumer lag spike resolved · lag 4200→0 · scaled N→N+2", scenarioId: "lag-spike" };
+          dispatch({ type: "notification", record: slackNotif });
+          toast(dispatch, "📢 Slack + ITSM notification sent — sending email summary…", "success");
+          sendEmail("lag-spike", "Consumer Lag Spike", 4200, 0, "kafka.scaleConsumers");
+        }, 3000));
+
+        allTimers.push(setTimeout(() => {
+          agents = patch(agents, "notification", { status: "online", mralPhase: "idle" });
+          agents = patch(agents, "monitor", { status: "reasoning", mralPhase: "learn" });
+          dispatch({ type: "state", payload: { agents, mralPhase: "learn", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: true } });
+          dispatch({ type: "audit", record: auditRec("monitor", "Recording lesson: scale-out threshold adjusted → 150 msg/s") });
+          particle(dispatch, "e-learn", "monitor", "monitor");
+        }, 4500));
+
+        allTimers.push(setTimeout(() => {
+          agents = patch(agents, "monitor", { status: "online", mralPhase: "idle",
+            lastLesson: { id: uid(), ts: Date.now(), scenarioId: "lag-spike", actionTaken: "kafka.scaleConsumers(delta=2)", effective: true, lagBefore: 4200, lagAfter: 0, adjustedThreshold: 150, notes: "Scale-out resolved lag in 9s. Threshold tightened from 300→150 msg/s for faster response." }
+          });
+          dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
+          toast(dispatch, "✅ Scenario complete — lesson recorded", "success");
+        }, 6000));
+
+      } else {
+        // ── REJECTED PATH ─────────────────────────────────────────────────────
+        agents = baseAgents(); // reset all agents to online/idle
+        dispatch({ type: "state", payload: { agents, mralPhase: "idle", broker: mockBroker(0), pendingApprovals: [], incidentQueueDepth: 0, scenarioRunning: false } });
+        dispatch({ type: "audit", record: auditRec("monitor", "Action REJECTED by operator — kafka.scaleConsumers not executed, scenario aborted") });
+        toast(dispatch, "🚫 Action rejected — scenario aborted, no changes made", "error");
+      }
+    };
+  });
+
+  return () => allTimers.forEach(clearTimeout);
 }
 
 function runControllerFailover(dispatch: DispatchFn): () => void {
