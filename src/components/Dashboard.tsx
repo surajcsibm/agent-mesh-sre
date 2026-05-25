@@ -1412,91 +1412,73 @@ function ScenarioHistoryBar({ history, onView }: {
   if (!history.length) return null;
 
   return (
-    <div className="p-4">
-      <div className="flex items-center gap-2 mb-4">
-        <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#1D9E75" }} />
-        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "#1e3a5f" }}>
+    <div className="p-3">
+      <div className="flex items-center gap-2 mb-2 px-1">
+        <span className="w-2 h-2 rounded-full" style={{ background: "#1D9E75" }} />
+        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "#1e3a5f", opacity: 0.65 }}>
           Scenario History
         </span>
-        <span className="ml-1 text-xs font-normal" style={{ color: "#94a3b8" }}>
-          ({history.length} cycle{history.length !== 1 ? "s" : ""}) — click any card to review
+        <span className="text-xs font-normal ml-1" style={{ color: "#94a3b8" }}>
+          ({history.length}) — click to view full details
         </span>
       </div>
 
-      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+      <div className="space-y-1.5">
         {history.map((h, i) => {
-          const approved   = h.approved;
-          const cardColor  = inferColor(h.scenarioLabel);
+          const approved  = h.approved;
+          const cardColor = inferColor(h.scenarioLabel);
           const confidence = h.reasoning ? Math.round(h.reasoning.confidence * 100) : null;
-          const lagFixed   = !approved ? null : (h.lagBefore > 0 && h.lagAfter < h.lagBefore);
 
           return (
             <button
               key={i}
               onClick={() => onView(h)}
-              className="rounded-2xl border text-left transition-all shadow-sm"
+              className="w-full text-left rounded-xl border flex items-center gap-3 px-4 py-2.5 transition-all"
               style={{
-                background: "#fff",
-                borderColor: cardColor + "35",
-                overflow: "hidden",
+                background: "#fff", borderColor: "#dce5ef",
+                borderLeftWidth: 4, borderLeftColor: cardColor,
               }}
               onMouseEnter={e => {
-                (e.currentTarget as HTMLElement).style.borderColor = cardColor;
-                (e.currentTarget as HTMLElement).style.boxShadow = `0 6px 20px ${cardColor}22`;
-                (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)";
+                (e.currentTarget as HTMLElement).style.background = cardColor + "08";
+                (e.currentTarget as HTMLElement).style.borderColor = cardColor + "60";
+                (e.currentTarget as HTMLElement).style.borderLeftColor = cardColor;
               }}
               onMouseLeave={e => {
-                (e.currentTarget as HTMLElement).style.borderColor = cardColor + "35";
-                (e.currentTarget as HTMLElement).style.boxShadow = "";
-                (e.currentTarget as HTMLElement).style.transform = "";
+                (e.currentTarget as HTMLElement).style.background = "#fff";
+                (e.currentTarget as HTMLElement).style.borderColor = "#dce5ef";
+                (e.currentTarget as HTMLElement).style.borderLeftColor = cardColor;
               }}
             >
-              {/* Coloured top bar */}
-              <div style={{ height: 4, background: `linear-gradient(90deg, ${cardColor}, ${cardColor}88)` }} />
+              {/* Status dot */}
+              <span style={{
+                width: 8, height: 8, borderRadius: "50%", flexShrink: 0, display: "inline-block",
+                background: approved ? "#16a34a" : "#dc2626",
+              }} />
 
-              <div style={{ padding: "14px 16px 14px" }}>
-                {/* Scenario name */}
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#1e3a5f", lineHeight: 1.35, marginBottom: 6 }}>
-                  {h.scenarioLabel}
-                </div>
+              {/* Scenario name */}
+              <span style={{ fontSize: 13, fontWeight: 600, color: "#1e3a5f", flex: 1, textAlign: "left" }}>
+                {h.scenarioLabel}
+              </span>
 
-                {/* Root cause snippet */}
-                {h.reasoning?.rootCause && (
-                  <div style={{
-                    fontSize: 11, color: "#64748b", lineHeight: 1.5, marginBottom: 10,
-                    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
-                  }}>
-                    {h.reasoning.rootCause}
-                  </div>
-                )}
+              {/* Confidence */}
+              {confidence !== null && (
+                <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>
+                  {confidence}%
+                </span>
+              )}
 
-                {/* Outcome row */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{
-                    fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 20,
-                    background: approved ? "#dcfce7" : "#fef2f2",
-                    color: approved ? "#16a34a" : "#dc2626",
-                    border: `1px solid ${approved ? "#86efac" : "#fca5a5"}`,
-                  }}>
-                    {approved ? "✓ Resolved" : "✗ Rejected"}
-                  </span>
-                  {confidence !== null && (
-                    <span style={{ fontSize: 10, fontWeight: 600, color: "#94a3b8" }}>
-                      {confidence}% confidence
-                    </span>
-                  )}
-                  {lagFixed && (
-                    <span style={{ fontSize: 10, fontWeight: 600, color: "#1D9E75" }}>
-                      ↓ lag fixed
-                    </span>
-                  )}
-                </div>
+              {/* Status badge */}
+              <span style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 9px", borderRadius: 20, flexShrink: 0,
+                background: approved ? "#dcfce7" : "#fef2f2",
+                color: approved ? "#16a34a" : "#dc2626",
+                border: `1px solid ${approved ? "#86efac" : "#fca5a5"}`,
+              }}>
+                {approved ? "✓ Resolved" : "✗ Rejected"}
+              </span>
 
-                {/* Email sent indicator */}
-                <div style={{ marginTop: 8, fontSize: 10, color: h.sent ? "#1D9E75" : "#94a3b8" }}>
-                  {h.sent ? "✉ email sent" : "✉ no email"}
-                </div>
-              </div>
+              {/* Chevron */}
+              <span style={{ fontSize: 14, color: "#94a3b8", flexShrink: 0 }}>›</span>
             </button>
           );
         })}
@@ -1581,23 +1563,12 @@ export default function Dashboard() {
 
   // ── Floating overlay states ────────────────────────────────────────────────
   const [brokerOpen, setBrokerOpen]           = useState(false);
-  const [liveFeedOpen, setLiveFeedOpen]       = useState(false);
   const [summaryHistory, setSummaryHistory]   = useState<EmailSummaryData[]>([]);
   const [viewHistorySummary, setViewHistorySummary] = useState<EmailSummaryData | null>(null);
-  const prevRunningRef = useRef(false);
 
-  // Open live feed when a new scenario starts ────────────────────────────────
-  useEffect(() => {
-    if (state.scenarioRunning && !prevRunningRef.current) {
-      setLiveFeedOpen(true);
-    }
-    prevRunningRef.current = state.scenarioRunning;
-  }, [state.scenarioRunning]);
-
-  // Capture completed scenario to history; close live feed ──────────────────
+  // Capture completed scenario to history ───────────────────────────────────
   useEffect(() => {
     if (!state.emailSummary) return;
-    setLiveFeedOpen(false);
     setSummaryHistory(prev => {
       if (
         prev.length > 0 &&
@@ -1818,7 +1789,7 @@ export default function Dashboard() {
           {/* 1 ── Agent canvas — large, with floating overlays ── */}
           <div className="shrink-0 relative"
                style={{
-                 height: 540,
+                 height: 580,
                  backgroundImage: "radial-gradient(circle, #b8cfe0 1.5px, transparent 1.5px)",
                  backgroundSize: "28px 28px",
                  background: "radial-gradient(circle, #b8cfe0 1.5px, transparent 1.5px) #eef4f9",
@@ -1888,94 +1859,6 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* ── Live feed floating popup — visible only during scenario ── */}
-            {state.scenarioRunning && !state.emailSummary && liveFeedOpen && (
-              <div style={{
-                position: "absolute",
-                bottom: 10, left: "50%", transform: "translateX(-50%)",
-                zIndex: 15,
-                width: 420, maxHeight: 210,
-                background: "rgba(255,255,255,0.97)",
-                border: "1.5px solid #dce5ef",
-                borderRadius: 16,
-                boxShadow: "0 10px 36px rgba(30,58,95,0.20)",
-                overflow: "hidden",
-                backdropFilter: "blur(10px)",
-                animation: "slideUp 0.25s ease-out",
-              }}>
-                {/* Feed header */}
-                <div style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "9px 13px", background: "#f0f4f8",
-                  borderBottom: "1px solid #dce5ef",
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                    <span style={{
-                      width: 8, height: 8, borderRadius: "50%", background: "#1D9E75",
-                      display: "inline-block", animation: "pulse 2s infinite",
-                    }} />
-                    <span style={{ fontSize: 11, fontWeight: 800, color: "#1e3a5f", textTransform: "uppercase", letterSpacing: "0.7px" }}>
-                      Live Events Feed
-                    </span>
-                    <span style={{ fontSize: 11, color: "#94a3b8" }}>· {state.auditLog.length} events</span>
-                  </div>
-                  <button
-                    onClick={() => setLiveFeedOpen(false)}
-                    style={{ fontSize: 16, color: "#94a3b8", background: "none", border: "none", cursor: "pointer", lineHeight: 1, padding: "0 2px" }}
-                  >
-                    ×
-                  </button>
-                </div>
-                {/* Feed items */}
-                <div style={{ overflowY: "auto", maxHeight: 155, padding: "7px 9px", display: "flex", flexDirection: "column", gap: 4 }}>
-                  {[...state.auditLog].reverse().slice(0, 35).map((r) => {
-                    const color = AUDIT_COLOR[r.type] ?? "#94a3b8";
-                    return (
-                      <div key={r.id} style={{
-                        display: "flex", alignItems: "flex-start", gap: 7, padding: "5px 8px",
-                        borderRadius: 9, background: color + "07", border: `1px solid ${color}22`,
-                      }}>
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
-                          background: color + "18", color, border: `1px solid ${color}30`,
-                          flexShrink: 0, textTransform: "uppercase",
-                        }}>
-                          {r.type}
-                        </span>
-                        <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, flexShrink: 0 }}>
-                          [{r.agent}]
-                        </span>
-                        <span style={{ fontSize: 11, color: "#334155", lineHeight: 1.4 }}>
-                          {r.summary}
-                        </span>
-                      </div>
-                    );
-                  })}
-                  {state.auditLog.length === 0 && (
-                    <p style={{ fontSize: 12, color: "#94a3b8", textAlign: "center", padding: "14px 0", fontStyle: "italic" }}>
-                      Waiting for events…
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ── "Show live feed" button when running but feed was closed ── */}
-            {state.scenarioRunning && !state.emailSummary && !liveFeedOpen && (
-              <button
-                onClick={() => setLiveFeedOpen(true)}
-                style={{
-                  position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)",
-                  zIndex: 15, fontSize: 11, fontWeight: 700,
-                  background: "rgba(29,158,117,0.92)", color: "#fff",
-                  border: "none", borderRadius: 20, padding: "6px 16px",
-                  cursor: "pointer", backdropFilter: "blur(4px)",
-                  boxShadow: "0 3px 12px rgba(29,158,117,0.35)",
-                }}
-              >
-                ● Live Feed
-              </button>
-            )}
           </div>
 
           {/* 2 ── Notification bar ─────────────────────────────────────────── */}
@@ -2004,18 +1887,69 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* 3 ── Scenario history (flex-1, scrollable) ────────────────────── */}
-          <div className="flex-1 overflow-y-auto min-h-0" style={{ background: "#f8fafc", borderTop: "1px solid #dce5ef" }}>
-            {summaryHistory.length > 0 ? (
-              <ScenarioHistoryBar history={summaryHistory} onView={setViewHistorySummary} />
+          {/* 3 ── Live feed (while running) or Scenario history ──────────── */}
+          <div className="flex-1 overflow-hidden min-h-0 flex flex-col" style={{ background: "#f8fafc", borderTop: "1px solid #dce5ef" }}>
+            {state.scenarioRunning && !state.emailSummary ? (
+              /* ── Live feed fills the area while scenario is active ── */
+              <>
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: "10px 16px",
+                  background: "#f0f4f8", borderBottom: "1px solid #dce5ef", flexShrink: 0,
+                }}>
+                  <span style={{
+                    width: 9, height: 9, borderRadius: "50%", background: "#1D9E75",
+                    display: "inline-block", animation: "pulse 2s infinite", flexShrink: 0,
+                  }} />
+                  <span style={{ fontSize: 12, fontWeight: 800, color: "#1e3a5f", textTransform: "uppercase", letterSpacing: "0.7px" }}>
+                    Live Events Feed
+                  </span>
+                  <span style={{ fontSize: 12, color: "#94a3b8" }}>· {state.auditLog.length} events</span>
+                </div>
+                <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px", display: "flex", flexDirection: "column", gap: 5 }}>
+                  {[...state.auditLog].reverse().map((r) => {
+                    const color = AUDIT_COLOR[r.type] ?? "#94a3b8";
+                    return (
+                      <div key={r.id} style={{
+                        display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 10px",
+                        borderRadius: 10, background: color + "07", border: `1px solid ${color}22`,
+                      }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                          background: color + "18", color, border: `1px solid ${color}30`,
+                          flexShrink: 0, textTransform: "uppercase", marginTop: 1,
+                        }}>
+                          {r.type}
+                        </span>
+                        <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, flexShrink: 0 }}>
+                          [{r.agent}]
+                        </span>
+                        <span style={{ fontSize: 12, color: "#334155", lineHeight: 1.45 }}>
+                          {r.summary}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {state.auditLog.length === 0 && (
+                    <p style={{ fontSize: 12, color: "#94a3b8", textAlign: "center", padding: "20px 0", fontStyle: "italic" }}>
+                      Waiting for events…
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : summaryHistory.length > 0 ? (
+              /* ── History list after scenario ends ── */
+              <div className="overflow-y-auto flex-1">
+                <ScenarioHistoryBar history={summaryHistory} onView={setViewHistorySummary} />
+              </div>
             ) : (
+              /* ── Empty state ── */
               <div className="flex flex-col items-center justify-center h-full gap-3 py-8">
-                <div style={{ fontSize: 32, opacity: 0.25 }}>📋</div>
+                <div style={{ fontSize: 32, opacity: 0.2 }}>📋</div>
                 <p className="text-sm font-medium" style={{ color: "#94a3b8" }}>
-                  Trigger a scenario to see history here
+                  Trigger a scenario to see live events here
                 </p>
                 <p style={{ fontSize: 11, color: "#b0bec8" }}>
-                  Each completed MRAL cycle creates a clickable summary card
+                  Each completed cycle adds a clickable one-line summary below
                 </p>
               </div>
             )}
