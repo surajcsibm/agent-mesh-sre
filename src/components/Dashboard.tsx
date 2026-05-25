@@ -622,10 +622,9 @@ function AuditLogPanel({ log }: { log: AuditRecord[] }) {
   );
 }
 
-// ── Agent live feed — canvas overlay showing key decisions per active agent ───
-// Filters audit log to high-signal event types only (reasoning, tool-call,
-// approval, lesson, notification). Positioned top-right of the canvas.
-// Same data goes to audit log (all) and summary email/popup (key fields).
+// ── Agent live feed — vertical scrollable panel below the canvas ──────────────
+// Shows all recent audit events as stacked cards (newest first).
+// Visible whenever a scenario is running (hidden when summary modal is up).
 
 const KEY_EVENT_TYPES = new Set([
   "reasoning", "tool-call", "approval", "lesson", "notification",
@@ -637,135 +636,163 @@ function AgentLiveFeed({ log, agents, running, hidden }: {
   running: boolean;
   hidden: boolean;
 }) {
-  if (!running || hidden) return null;
-
   const active = agents.find((a) =>
     (["reasoning", "acting", "awaiting-approval", "learning"] as AgentState["status"][]).includes(a.status)
   );
-
-  const keyEvents = [...log]
-    .filter((r) => KEY_EVENT_TYPES.has(r.type))
-    .reverse()
-    .slice(0, 5);
-
-  if (!active && keyEvents.length === 0) return null;
-
-  const agentColor = active ? (AGENT_COLOR[active.id] ?? "#60a5fa") : "#60a5fa";
+  const agentColor = active ? (AGENT_COLOR[active.id] ?? "#60a5fa") : "#1D9E75";
   const desc       = active ? (PHASE_DESC[active.status] ?? active.status) : null;
 
+  // Show all audit events, most recent first, up to 40
+  const recent = [...log].reverse().slice(0, 40);
+
   return (
-    <div className="absolute bottom-4 left-1/2 z-10 pointer-events-none select-none
-                    animate-[slideUp_0.25s_ease-out]"
-         style={{ transform: "translateX(-50%)", width: "min(520px, 90%)" }}>
-      <div className="bg-white rounded-xl overflow-hidden" style={{ border: "1px solid #dce5ef", boxShadow: "0 4px 20px rgba(30,58,95,0.10)" }}>
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-3 py-2 shrink-0"
+           style={{ borderBottom: "1px solid #dce5ef", background: "#f8fafc" }}>
+        <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse"
+              style={{ background: running && !hidden ? "#1D9E75" : "#94a3b8" }} />
+        <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "#1e3a5f" }}>
+          Live Events Feed
+        </span>
+        {running && !hidden && active && (
+          <>
+            <span style={{ color: "#dce5ef", fontSize: 10 }}>·</span>
+            <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse"
+                  style={{ background: agentColor }} />
+            <span className="text-[10px] font-bold shrink-0" style={{ color: agentColor }}>
+              {active.name}
+            </span>
+            {desc && (
+              <span className="text-[9px] shrink-0" style={{ color: "#94a3b8" }}>{desc}</span>
+            )}
+          </>
+        )}
+        <span className="ml-auto text-[9px]" style={{ color: "#94a3b8" }}>
+          {log.length} events
+        </span>
+      </div>
 
-        {/* Header row: active agent + live label */}
-        <div className="flex items-center gap-3 px-3 py-2 shrink-0" style={{ borderBottom: "1px solid #e8eef4", background: "#f8fafc" }}>
-          <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: "#1D9E75" }} />
-          <span className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "#1e3a5f" }}>
-            Agent Live Feed
-          </span>
-          {active && (
-            <>
-              <span style={{ color: "#dce5ef" }}>·</span>
-              <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: agentColor }} />
-              <span className="text-[10px] font-bold shrink-0" style={{ color: agentColor }}>{active.name}</span>
-              {desc && <span className="text-[9px] shrink-0" style={{ color: "#94a3b8" }}>{desc}</span>}
-            </>
-          )}
-          <span className="ml-auto text-[9px]" style={{ color: "#94a3b8" }}>{keyEvents.length} events</span>
-        </div>
-
-        {/* Scrollable horizontal events strip */}
-        <div className="flex items-start gap-2 px-3 py-2.5 overflow-x-auto" style={{ minHeight: "68px" }}>
-          {keyEvents.length === 0 ? (
-            <p className="text-xs italic self-center" style={{ color: "#94a3b8" }}>Initialising scenario…</p>
-          ) : keyEvents.map((r) => (
+      {/* Scrollable vertical event list */}
+      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+        {recent.length === 0 ? (
+          <p className="text-xs italic text-center pt-3" style={{ color: "#94a3b8" }}>
+            Trigger a scenario to see live events…
+          </p>
+        ) : recent.map((r) => {
+          const color = AUDIT_COLOR[r.type] ?? "#94a3b8";
+          return (
             <div key={r.id}
-              className="shrink-0 rounded-lg px-2.5 py-2 border"
-              style={{
-                background:   (AUDIT_COLOR[r.type] ?? "#94a3b8") + "09",
-                borderColor:  (AUDIT_COLOR[r.type] ?? "#94a3b8") + "28",
-                minWidth: "160px", maxWidth: "220px",
-              }}>
-              <div className="flex items-center gap-1 mb-1">
-                <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
-                  style={{
-                    background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "20",
-                    color:      AUDIT_COLOR[r.type] ?? "#94a3b8",
-                    border:    `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}30`,
-                  }}>
-                  {r.type}
+              className="flex items-start gap-2 rounded-lg px-2.5 py-2 border"
+              style={{ background: color + "06", borderColor: color + "22" }}>
+              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded mt-0.5"
+                style={{ background: color + "18", color, border: `1px solid ${color}30` }}>
+                {r.type}
+              </span>
+              <div className="flex-1 min-w-0">
+                <span className="text-[9px] font-semibold mr-1" style={{ color: "#94a3b8" }}>
+                  [{r.agent}]
                 </span>
-                <span className="text-[9px] font-medium truncate" style={{ color: "#94a3b8" }}>[{r.agent}]</span>
-              </div>
-              <div className="text-[10px] leading-snug break-words" style={{ color: "#475569" }}>
-                {r.summary.slice(0, 72)}{r.summary.length > 72 ? "…" : ""}
+                <span className="text-[10px] leading-snug break-words" style={{ color: "#475569" }}>
+                  {r.summary}
+                </span>
               </div>
             </div>
-          ))}
-        </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-// ── Live events feed — floats above the audit log while a scenario runs ───────
-// Uses absolute inset-0 inside a dedicated relative wrapper so overflow-hidden
-// on the sidebar never clips it. Light blue/white theme matches the dashboard.
-// Hides automatically when the scenario-end summary modal appears.
+// ── Canvas topics grid — shows top N topics as compact cards ─────────────────
 
-function LiveEventsFeed({ log, running, hidden }: {
-  log: AuditRecord[];
-  running: boolean;
-  hidden: boolean;
+function CanvasTopicsGrid({
+  topics, topicsVisible, onShowMore,
+}: {
+  topics: KafkaTopic[];
+  topicsVisible: number;
+  onShowMore: () => void;
 }) {
-  if (!running || hidden) return null;
-
-  const recent = [...log].reverse().slice(0, 8);
+  const sorted = [...topics].sort((a, b) => {
+    const order = { critical: 0, degraded: 1, healthy: 2 };
+    const sd = order[a.status] - order[b.status];
+    return sd !== 0 ? sd : b.lagTotal - a.lagTotal;
+  });
+  const visible = sorted.slice(0, topicsVisible);
+  const remaining = sorted.length - topicsVisible;
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col backdrop-blur-[2px]
-                    rounded-lg animate-[fadeIn_0.15s_ease-out]"
-         style={{ background: "rgba(29,158,117,0.06)", border: "1px solid rgba(29,158,117,0.18)" }}>
-
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2.5 shrink-0"
-           style={{ borderBottom: "1px solid rgba(29,158,117,0.18)" }}>
-        <span className="w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: "#1D9E75" }} />
-        <span className="text-xs font-bold uppercase tracking-widest" style={{ color: "#0F6E56" }}>
-          Live Activity
+    <div className="p-3">
+      {/* Section header */}
+      <div className="flex items-center justify-between mb-2.5">
+        <span className="text-[10px] font-bold uppercase tracking-widest"
+              style={{ color: "#1e3a5f", opacity: 0.55 }}>
+          Kafka Topics
+          <span className="font-normal normal-case ml-1.5" style={{ color: "#94a3b8" }}>
+            ({topics.length} total · showing {visible.length})
+          </span>
         </span>
-        <span className="ml-auto text-xs font-normal" style={{ color: "#1D9E75" }}>
-          {log.length} events
+        <span className="text-[9px]" style={{ color: "#94a3b8" }}>
+          {topics.filter(t => t.status === "critical").length > 0 && (
+            <span className="text-red-500 font-bold mr-2">
+              {topics.filter(t => t.status === "critical").length} critical
+            </span>
+          )}
+          {topics.filter(t => t.status === "degraded").length > 0 && (
+            <span className="text-amber-500 font-bold">
+              {topics.filter(t => t.status === "degraded").length} degraded
+            </span>
+          )}
         </span>
       </div>
 
-      {/* Cards */}
-      <div className="flex-1 overflow-y-auto space-y-2 p-3 pr-2">
-        {recent.length === 0 ? (
-          <p className="text-xs italic px-1 pt-2" style={{ color: "#1D9E75" }}>Waiting for events…</p>
-        ) : recent.map((r) => (
-          <div key={r.id}
-            className="rounded-lg bg-white px-3 py-2.5 shadow-sm"
-            style={{ border: "1px solid #dce5ef" }}>
-            <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-              <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
-                style={{
-                  background: (AUDIT_COLOR[r.type] ?? "#94a3b8") + "18",
-                  color:       AUDIT_COLOR[r.type] ?? "#94a3b8",
-                  border:     `1px solid ${(AUDIT_COLOR[r.type] ?? "#94a3b8")}35`,
-                }}>
-                {r.type}
-              </span>
-              <span className="text-[10px] font-semibold text-[#64748b] shrink-0">[{r.agent}]</span>
+      {/* Topic cards grid */}
+      <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}>
+        {visible.map(t => {
+          const st  = TOPIC_STATUS_STYLE[t.status];
+          const lag = t.lagTotal > 9999 ? `${(t.lagTotal / 1000).toFixed(0)}k` :
+                      t.lagTotal > 999  ? `${(t.lagTotal / 1000).toFixed(1)}k` :
+                      String(t.lagTotal);
+          return (
+            <div key={t.id}
+              className="rounded-xl border px-3 py-2.5 transition-all"
+              style={{ background: "#fff", borderColor: "#dce5ef" }}>
+              {/* Status + name */}
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${st.dot}`} />
+                <span className="text-[10px] font-bold truncate" style={{ color: "#1e3a5f" }}>
+                  {t.name.split(".").slice(-2).join(".")}
+                </span>
+              </div>
+              {/* Metrics */}
+              <div className="flex items-center gap-2 text-[9px]" style={{ color: "#94a3b8" }}>
+                <span>{t.partitions}p</span>
+                <span style={{ color: "#e2e8f0" }}>·</span>
+                <span className={
+                  t.lagTotal > 5000 ? "text-red-500 font-bold" :
+                  t.lagTotal > 1000 ? "text-amber-500 font-bold" : ""
+                }>{lag}</span>
+                <span style={{ color: "#e2e8f0" }}>·</span>
+                <span>{t.msgPerSec}/s</span>
+              </div>
             </div>
-            <div className="text-xs text-[#475569] leading-relaxed break-words whitespace-normal">
-              {r.summary}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+
+      {/* Show more button */}
+      {remaining > 0 && (
+        <button
+          onClick={onShowMore}
+          className="mt-3 w-full py-2 rounded-xl text-[10px] font-bold transition-colors"
+          style={{ background: "#f0f4f8", color: "#64748b", border: "1px solid #dce5ef" }}
+          onMouseEnter={e => (e.currentTarget.style.background = "#dce5ef")}
+          onMouseLeave={e => (e.currentTarget.style.background = "#f0f4f8")}
+        >
+          Show {Math.min(20, remaining)} more topics ↓
+        </button>
+      )}
     </div>
   );
 }
@@ -1373,8 +1400,43 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
+  // Background topic creation — new topic every 18–40 seconds
+  useEffect(() => {
+    const PREFIXES = ["payments","orders","users","inventory","analytics","notifications",
+                      "events","logs","metrics","audit","billing","shipping","catalog","streams"];
+    const SUFFIXES = ["created.v1","updated.v2","deleted.v1","processed.v2","completed.v1",
+                      "triggered.v1","synced.v2","failed.v1","queued.v1","dispatched.v2"];
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        const prefix = PREFIXES[Math.floor(Math.random() * PREFIXES.length)];
+        const suffix = SUFFIXES[Math.floor(Math.random() * SUFFIXES.length)];
+        const name   = `${prefix}.${suffix}`;
+        setTopics(prev => {
+          if (prev.some(t => t.name === name)) return prev;
+          const newTopic: KafkaTopic = {
+            id: `t-bg-${Date.now()}`,
+            name,
+            partitions:        [2, 4, 6, 8][Math.floor(Math.random() * 4)],
+            replicationFactor: Math.random() > 0.25 ? 3 : 2,
+            retentionHours:    [24, 48, 72, 168][Math.floor(Math.random() * 4)],
+            lagTotal:          Math.floor(Math.random() * 600),
+            msgPerSec:         Math.floor(Math.random() * 180) + 5,
+            status:            "healthy",
+            consumerGroups:    [],
+            description:       `Auto-generated ${prefix} ${suffix.replace(/\.v\d$/, "")} events`,
+          };
+          return [...prev, newTopic];
+        });
+        schedule();
+      }, 18000 + Math.random() * 22000); // 18–40 s
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, []);
+
   const [extraOpen, setExtraOpen] = useState(false);
-  const [brokerOpen, setBrokerOpen] = useState(false);
+  const [topicsVisible, setTopicsVisible] = useState(20);
 
   const handleTopicSave = (updated: KafkaTopic) => {
     const prev = topics.find((t) => t.id === updated.id)!;
@@ -1580,11 +1642,16 @@ export default function Dashboard() {
           <TopicsPanel topics={topics} prevLagRef={prevLagRef} onSelect={setSelectedTopic} onCreateNew={() => setCreateModalOpen(true)} />
         </aside>
 
-        {/* Canvas — white + dot grid */}
+        {/* Canvas + live feed + topics — stacked vertically */}
         <main className="flex-1 flex flex-col overflow-hidden" style={{ background: "#ffffff" }}>
-          {/* relative here is safe — AgentCanvas is a direct child with w-full h-full */}
-          <div className="flex-1 p-4 min-h-0 relative"
-               style={{ backgroundImage: "radial-gradient(circle, #c8d8e8 1px, transparent 1px)", backgroundSize: "24px 24px" }}>
+
+          {/* 1 ── Agent canvas (dot-grid, fixed height) */}
+          <div className="shrink-0 relative"
+               style={{
+                 height: 360,
+                 backgroundImage: "radial-gradient(circle, #c8d8e8 1px, transparent 1px)",
+                 backgroundSize: "24px 24px",
+               }}>
             <AgentCanvas
               agents={state.agents}
               broker={state.broker}
@@ -1592,103 +1659,33 @@ export default function Dashboard() {
               onKill={(id) => agentAction(id, "kill")}
               onRestart={(id) => agentAction(id, "restart")}
             />
+          </div>
 
-            {/* ── Floating broker popup — pinned top-left of canvas ── */}
-            {state.broker && (
-              <div className="absolute top-3 left-3 z-10">
-                {/* Toggle button */}
-                <button
-                  onClick={() => setBrokerOpen((o) => !o)}
-                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-bold transition-all shadow-sm"
-                  style={{
-                    background: brokerOpen ? "#1e3a5f" : "rgba(255,255,255,0.92)",
-                    color: brokerOpen ? "#93c5fd" : "#1e3a5f",
-                    border: "1px solid #dce5ef",
-                    backdropFilter: "blur(4px)",
-                  }}
-                  onMouseEnter={e => { if (!brokerOpen) { (e.currentTarget as HTMLElement).style.background = "#1e3a5f"; (e.currentTarget as HTMLElement).style.color = "#93c5fd"; }}}
-                  onMouseLeave={e => { if (!brokerOpen) { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.92)"; (e.currentTarget as HTMLElement).style.color = "#1e3a5f"; }}}
-                >
-                  <span>⚙️</span>
-                  <span>Broker</span>
-                  <span style={{ color: state.broker.brokersOnline > 0 ? "#1D9E75" : "#dc2626", marginLeft: 2 }}>
-                    {state.broker.brokersOnline}n
-                  </span>
-                  <span className="ml-1" style={{ color: brokerOpen ? "#93c5fd" : "#94a3b8", fontSize: 9 }}>
-                    {brokerOpen ? "▴" : "▾"}
-                  </span>
-                </button>
-
-                {/* Dropdown panel */}
-                {brokerOpen && (
-                  <div className="mt-1.5 rounded-xl shadow-xl overflow-hidden animate-[slideDown_0.15s_ease-out]"
-                       style={{ background: "#fff", border: "1px solid #dce5ef", minWidth: "220px", maxWidth: "260px" }}>
-
-                    {/* Header */}
-                    <div className="flex items-center justify-between px-3 py-2"
-                         style={{ background: "#1e3a5f" }}>
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-widest" style={{ color: "#93c5fd" }}>
-                          Kafka Broker
-                        </div>
-                        <div className="text-[9px] mt-0.5" style={{ color: "rgba(255,255,255,0.6)" }}>
-                          {state.broker.mode} · epoch {state.broker.controllerEpoch} ·{" "}
-                          <span style={{ color: state.broker.mtls ? "#6ee7b7" : "#fca5a5" }}>
-                            {state.broker.mtls ? "mTLS ✓" : "mTLS ✗"}
-                          </span>
-                          {" · "}
-                          <span style={{ color: state.broker.sasl ? "#6ee7b7" : "#fca5a5" }}>
-                            {state.broker.sasl ? "SASL ✓" : "SASL ✗"}
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setBrokerOpen(false)}
-                        className="text-sm leading-none transition-colors"
-                        style={{ color: "#93c5fd" }}
-                        onMouseEnter={e => (e.currentTarget.style.color = "#fff")}
-                        onMouseLeave={e => (e.currentTarget.style.color = "#93c5fd")}
-                      >×</button>
-                    </div>
-
-                    {/* Topic lags */}
-                    <div className="px-3 pt-2 pb-1">
-                      <div className="text-[9px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "#94a3b8" }}>Topic Lags</div>
-                      <div className="space-y-1">
-                        {Object.entries(state.broker.topics).map(([topic, t]) => (
-                          <div key={topic} className="flex items-center justify-between gap-2">
-                            <span className="text-[9px] truncate max-w-[130px]" style={{ color: "#64748b" }}>{topic.split(".").slice(-2).join(".")}</span>
-                            <span className={clsx("text-[9px] font-bold shrink-0",
-                              (t as { lag: number }).lag > 5000 ? "text-red-600" :
-                              (t as { lag: number }).lag > 0     ? "text-amber-600" : "text-[#94a3b8]")}>
-                              {(t as { lag: number }).lag.toLocaleString()}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Consumer group lags */}
-                    <div className="px-3 pt-2 pb-3" style={{ borderTop: "1px solid #f0f4f8" }}>
-                      <div className="text-[9px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "#94a3b8" }}>Consumer Groups</div>
-                      <div className="space-y-1">
-                        {Object.entries(state.broker.consumerGroups).map(([group, g]) => (
-                          <div key={group} className="flex items-center justify-between gap-2">
-                            <span className="text-[9px] truncate max-w-[130px]" style={{ color: "#64748b" }}>{group}</span>
-                            <span className={clsx("text-[9px] font-bold shrink-0",
-                              (g as { lag: number }).lag > 5000 ? "text-red-600" :
-                              (g as { lag: number }).lag > 0   ? "text-amber-600" : "text-emerald-600")}>
-                              {(g as { lag: number }).lag.toLocaleString()}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
+          {/* 2 ── Notifications bar — matches wireframe green bar */}
+          {state.notifications.length > 0 && (
+            <div className="shrink-0 px-4 py-1.5"
+                 style={{ borderTop: "1px solid rgba(29,158,117,0.20)", background: "rgba(29,158,117,0.06)" }}>
+              <div className="flex items-center gap-2 overflow-x-auto">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0 animate-pulse" style={{ background: "#1D9E75" }} />
+                {[...state.notifications].reverse().slice(0, 1).map((n) => (
+                  <button
+                    key={n.id}
+                    onClick={showLastSummary}
+                    className="flex-1 text-left text-xs font-medium truncate"
+                    style={{ color: "#0F6E56", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                  >
+                    {n.message}
+                    {state.lastEmailSummary && (
+                      <span className="ml-2 text-[9px]" style={{ color: "#94a3b8" }}>— click to review</span>
+                    )}
+                  </button>
+                ))}
               </div>
-            )}
+            </div>
+          )}
 
+          {/* 3 ── Vertical live events feed (scrollable, fixed height) */}
+          <div className="shrink-0 overflow-hidden" style={{ height: 188, borderTop: "1px solid #dce5ef" }}>
             <AgentLiveFeed
               log={state.auditLog}
               agents={state.agents}
@@ -1697,48 +1694,21 @@ export default function Dashboard() {
             />
           </div>
 
-          {/* Notifications strip — emerald Arctic, click to re-open summary */}
-          {state.notifications.length > 0 && (
-            <div className="shrink-0 px-4 py-2" style={{ borderTop: "1px solid rgba(29,158,117,0.18)", background: "rgba(29,158,117,0.05)" }}>
-              <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
-                {state.lastEmailSummary && (
-                  <span className="shrink-0 text-[9px] font-semibold whitespace-nowrap" style={{ color: "#1D9E75" }}>
-                    ↑ click to review
-                  </span>
-                )}
-                {[...state.notifications].reverse().slice(0, 5).map((n) => (
-                  <button
-                    key={n.id}
-                    onClick={showLastSummary}
-                    title="Click to view full scenario summary"
-                    className="shrink-0 flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs shadow-sm transition-all cursor-pointer"
-                    style={{ background: "#fff", border: "1px solid rgba(29,158,117,0.25)" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1D9E75"; (e.currentTarget as HTMLElement).style.background = "#f0faf6"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(29,158,117,0.25)"; (e.currentTarget as HTMLElement).style.background = "#fff"; }}
-                  >
-                    <span>{n.channel === "slack" ? "💬" : n.channel === "itsm" ? "🎫" : "✉️"}</span>
-                    <span className="font-medium max-w-[300px] truncate text-xs" style={{ color: "#0F6E56" }}>{n.message}</span>
-                    {state.lastEmailSummary && (
-                      <span className="text-xs shrink-0" style={{ color: "#94a3b8" }}>📋</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* 4 ── Canvas topics grid (flex-1, scrollable) */}
+          <div className="flex-1 overflow-y-auto min-h-0" style={{ borderTop: "1px solid #dce5ef", background: "#f8fafc" }}>
+            <CanvasTopicsGrid
+              topics={topics}
+              topicsVisible={topicsVisible}
+              onShowMore={() => setTopicsVisible(v => v + 20)}
+            />
+          </div>
         </main>
 
-        {/* Right sidebar — audit log with live feed overlaid while running */}
+        {/* Right sidebar — audit log */}
         <aside className="w-80 shrink-0 flex flex-col p-4 overflow-hidden"
                style={{ background: "#f8fafc", borderLeft: "1px solid #dce5ef" }}>
-          {/* Wrapper is the positioning context — live feed uses absolute inset-0 inside here */}
-          <div className="flex-1 overflow-hidden relative">
+          <div className="flex-1 overflow-hidden">
             <AuditLogPanel log={state.auditLog} />
-            <LiveEventsFeed
-              log={state.auditLog}
-              running={state.scenarioRunning}
-              hidden={!!state.emailSummary}
-            />
           </div>
 
           {/* Lessons learned — emerald Arctic */}
