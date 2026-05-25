@@ -5,7 +5,7 @@ import type {
   AgentState, BrokerState, MralPhase, ApprovalRequest,
   AuditRecord, LessonRecord, NotificationRecord, BusEvent,
 } from "@/lib/types";
-import { runClientScenario, resolvePendingApproval, type ScenarioKey, type SimAction, type EmailSummaryData } from "@/lib/client-sim";
+import { runClientScenario, resolvePendingApproval, runTopicManagement, type ScenarioKey, type SimAction, type EmailSummaryData, type TopicChangePayload } from "@/lib/client-sim";
 
 export interface MeshClientState {
   agents: AgentState[];
@@ -21,9 +21,10 @@ export interface MeshClientState {
   particles: { id: string; edgeId: string; fromNode: string; toNode: string; ts: number }[];
   connected: boolean;
   emailSummary: EmailSummaryData | null;
+  lastEmailSummary: EmailSummaryData | null;
 }
 
-export type { EmailSummaryData };
+export type { EmailSummaryData, TopicChangePayload };
 
 type Action =
   | { type: "state"; payload: Omit<MeshClientState, "toasts" | "particles" | "connected" | "auditLog" | "lessons" | "notifications" | "emailSummary"> & { auditLog?: AuditRecord[]; lessons?: LessonRecord[]; notifications?: NotificationRecord[]; scenarioRunning?: boolean } }
@@ -35,7 +36,8 @@ type Action =
   | { type: "notification"; record: NotificationRecord }
   | { type: "lesson"; record: LessonRecord }
   | { type: "connected"; value: boolean }
-  | { type: "emailSummary"; data: EmailSummaryData | null };
+  | { type: "emailSummary"; data: EmailSummaryData | null }
+  | { type: "lastEmailSummary"; data: EmailSummaryData | null };
 
 const initial: MeshClientState = {
   agents: [], broker: null, mralPhase: "idle",
@@ -43,6 +45,7 @@ const initial: MeshClientState = {
   incidentQueueDepth: 0, scenarioRunning: false,
   toasts: [], particles: [], connected: false,
   emailSummary: null,
+  lastEmailSummary: null,
 };
 
 function reducer(state: MeshClientState, action: Action): MeshClientState {
@@ -63,7 +66,13 @@ function reducer(state: MeshClientState, action: Action): MeshClientState {
     case "notification": return { ...state, notifications: [...state.notifications.slice(-49), action.record] };
     case "lesson": return { ...state, lessons: [...state.lessons.slice(-19), action.record] };
     case "connected": return { ...state, connected: action.value };
-    case "emailSummary": return { ...state, emailSummary: action.data };
+    case "emailSummary": return {
+      ...state,
+      emailSummary: action.data,
+      // Persist non-null data as lastEmailSummary so it can be re-shown
+      lastEmailSummary: action.data ?? state.lastEmailSummary,
+    };
+    case "lastEmailSummary": return { ...state, emailSummary: action.data };
     default: return state;
   }
 }
@@ -168,5 +177,15 @@ export function useMeshStream() {
 
   const dismissEmailSummary = () => dispatch({ type: "emailSummary", data: null });
 
-  return { state, trigger, approve, agentAction, reset, dismissEmailSummary };
+  const showLastSummary = () => {
+    if (state.lastEmailSummary) {
+      dispatch({ type: "lastEmailSummary", data: state.lastEmailSummary });
+    }
+  };
+
+  const triggerTopicAction = (payload: TopicChangePayload) => {
+    runTopicManagement(payload, dispatch as (a: SimAction) => void);
+  };
+
+  return { state, trigger, approve, agentAction, reset, dismissEmailSummary, showLastSummary, triggerTopicAction };
 }
