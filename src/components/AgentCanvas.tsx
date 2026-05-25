@@ -11,29 +11,29 @@ import "@xyflow/react/dist/style.css";
 import type { AgentState, MralPhase } from "@/lib/types";
 import clsx from "clsx";
 
-// ── Status colours ────────────────────────────────────────────────────────────
+// ── Status indicator colours (dot only) ──────────────────────────────────────
 
 const STATUS_COLOR: Record<string, string> = {
-  online:             "#22c55e",
-  reasoning:          "#a78bfa",
-  acting:             "#f97316",
-  "awaiting-approval":"#eab308",
-  crashed:            "#ef4444",
-  replaying:          "#06b6d4",
-  idle:               "#64748b",
+  online:              "#16a34a",
+  reasoning:           "#7c3aed",
+  acting:              "#ea580c",
+  "awaiting-approval": "#d97706",
+  crashed:             "#dc2626",
+  replaying:           "#0891b2",
+  idle:                "#94a3b8",
 };
 
 const MRAL_COLOR: Record<MralPhase, string> = {
-  idle:      "#475569",
-  monitor:   "#3b82f6",
-  reason:    "#8b5cf6",
-  awaiting:  "#eab308",
-  act:       "#f97316",
-  learn:     "#22c55e",
-  replaying: "#06b6d4",
+  idle:      "#94a3b8",
+  monitor:   "#2563eb",
+  reason:    "#7c3aed",
+  awaiting:  "#d97706",
+  act:       "#ea580c",
+  learn:     "#16a34a",
+  replaying: "#0891b2",
 };
 
-// ── Custom AgentNode ──────────────────────────────────────────────────────────
+// ── Agent node — uniform light blue background ────────────────────────────────
 
 interface AgentNodeData extends Record<string, unknown> {
   agent: AgentState;
@@ -43,61 +43,68 @@ interface AgentNodeData extends Record<string, unknown> {
 
 function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
   const { agent, onKill, onRestart } = data as AgentNodeData;
-  const statusColor = STATUS_COLOR[agent.status] ?? "#64748b";
-  const mralColor   = MRAL_COLOR[agent.mralPhase] ?? "#475569";
-  const crashed = agent.status === "crashed";
+  const statusColor = STATUS_COLOR[agent.status] ?? "#94a3b8";
+  const mralColor   = MRAL_COLOR[agent.mralPhase] ?? "#94a3b8";
+  const crashed     = agent.status === "crashed";
 
   return (
-    <div
-      className={clsx(
-        "relative rounded-xl border-2 p-3 w-44 shadow-lg transition-all duration-300",
-        crashed ? "bg-red-950/60 border-red-500/70" : "bg-slate-800/90 border-slate-600/60"
-      )}
-      style={{ borderColor: crashed ? "#ef4444" : agent.color + "80" }}
-    >
-      <Handle type="target" position={Position.Left}  style={{ background: "#475569", border: "none" }} />
-      <Handle type="source" position={Position.Right} style={{ background: "#475569", border: "none" }} />
+    <div className={clsx(
+      "relative rounded-xl border-2 p-3 w-44 shadow-md transition-all duration-300",
+      crashed
+        ? "bg-red-50 border-red-300"
+        : "bg-blue-50 border-blue-200"
+    )}>
+      <Handle type="target" position={Position.Left}
+        style={{ background: "#93c5fd", border: "2px solid #bfdbfe" }} />
+      <Handle type="source" position={Position.Right}
+        style={{ background: "#93c5fd", border: "2px solid #bfdbfe" }} />
 
       {/* Header */}
       <div className="flex items-center gap-2 mb-2">
         <div className="w-2.5 h-2.5 rounded-full shrink-0 animate-pulse"
           style={{ background: statusColor }} />
-        <div className="text-xs font-bold text-slate-100 truncate leading-tight">
+        <div className={clsx("text-xs font-bold truncate leading-tight",
+          crashed ? "text-red-800" : "text-blue-900")}>
           {agent.name}
         </div>
       </div>
 
       {/* MRAL phase badge */}
       <div className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 mb-2"
-        style={{ background: mralColor + "22", border: `1px solid ${mralColor}55` }}>
+        style={{ background: mralColor + "18", border: `1px solid ${mralColor}40` }}>
         <span className="text-[10px] font-bold uppercase tracking-wider"
           style={{ color: mralColor }}>
           {agent.mralPhase}
         </span>
       </div>
 
-      {/* Status */}
-      <div className="text-[10px] text-slate-400 truncate mb-2">{agent.status}</div>
+      {/* Status text */}
+      <div className={clsx("text-[10px] truncate mb-1.5",
+        crashed ? "text-red-500 font-semibold" : "text-slate-500")}>
+        {agent.status}
+      </div>
 
       {/* Last action snippet */}
       {agent.lastAction && (
-        <div className="text-[9px] text-slate-500 truncate bg-slate-900/50 rounded px-1.5 py-0.5 mb-2">
+        <div className="text-[9px] text-slate-500 truncate bg-blue-100/60 rounded px-1.5 py-0.5 mb-2 border border-blue-100">
           {agent.lastAction.detail.slice(0, 40)}…
         </div>
       )}
 
-      {/* Kill / Restart buttons */}
+      {/* Kill / Restart */}
       <div className="flex gap-1 mt-1">
         {!crashed ? (
           <button onClick={() => onKill(agent.id)}
-            className="flex-1 text-[9px] font-semibold py-0.5 rounded bg-red-900/40
-                       text-red-400 hover:bg-red-800/60 transition-colors border border-red-800/40">
+            className="flex-1 text-[9px] font-semibold py-1 rounded-lg
+                       bg-red-50 text-red-600 hover:bg-red-100
+                       transition-colors border border-red-200">
             Kill
           </button>
         ) : (
           <button onClick={() => onRestart(agent.id)}
-            className="flex-1 text-[9px] font-semibold py-0.5 rounded bg-cyan-900/40
-                       text-cyan-400 hover:bg-cyan-800/60 transition-colors border border-cyan-800/40">
+            className="flex-1 text-[9px] font-semibold py-1 rounded-lg
+                       bg-cyan-50 text-cyan-700 hover:bg-cyan-100
+                       transition-colors border border-cyan-200">
             Restart
           </button>
         )}
@@ -106,7 +113,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
   );
 }
 
-// ── Broker node ───────────────────────────────────────────────────────────────
+// ── Broker node — light blue, slightly deeper ─────────────────────────────────
 
 interface BrokerNodeData extends Record<string, unknown> {
   mode: string;
@@ -118,20 +125,22 @@ interface BrokerNodeData extends Record<string, unknown> {
 function BrokerNode({ data: rawData }: NodeProps<Node<BrokerNodeData>>) {
   const data = rawData as BrokerNodeData;
   return (
-    <div className="rounded-xl border-2 border-blue-700/60 bg-blue-950/60 p-3 w-44 shadow-lg">
-      <Handle type="source" position={Position.Right} style={{ background: "#3b82f6", border: "none" }} />
-      <Handle type="target" position={Position.Left}  style={{ background: "#3b82f6", border: "none" }} />
-      <div className="text-xs font-bold text-blue-300 mb-1.5">Kafka Broker</div>
+    <div className="rounded-xl border-2 border-blue-300 bg-blue-100 p-3 w-44 shadow-md">
+      <Handle type="source" position={Position.Right}
+        style={{ background: "#60a5fa", border: "2px solid #93c5fd" }} />
+      <Handle type="target" position={Position.Left}
+        style={{ background: "#60a5fa", border: "2px solid #93c5fd" }} />
+      <div className="text-xs font-bold text-blue-800 mb-2">Kafka Broker</div>
       <div className="space-y-0.5">
         {[
-          ["Mode",    data.mode],
-          ["Online",  `${data.brokersOnline}/3`],
-          ["Epoch",   String(data.controllerEpoch)],
-          ["Topics",  String(data.topicCount)],
+          ["Mode",   data.mode],
+          ["Online", `${data.brokersOnline}/3`],
+          ["Epoch",  String(data.controllerEpoch)],
+          ["Topics", String(data.topicCount)],
         ].map(([k, v]) => (
           <div key={k} className="flex justify-between text-[10px]">
-            <span className="text-slate-500">{k}</span>
-            <span className="text-slate-300 font-semibold">{v}</span>
+            <span className="text-blue-500">{k}</span>
+            <span className="text-blue-900 font-semibold">{v}</span>
           </div>
         ))}
       </div>
@@ -171,7 +180,7 @@ interface Props {
 }
 
 export default function AgentCanvas({ agents, broker, activeParticles, onKill, onRestart }: Props) {
-  const agentMap = useMemo(() => Object.fromEntries(agents.map((a) => [a.id, a])), [agents]);
+  const agentMap      = useMemo(() => Object.fromEntries(agents.map((a) => [a.id, a])), [agents]);
   const activeEdgeIds = useMemo(() => new Set(activeParticles.map((p) => p.edgeId)), [activeParticles]);
 
   const nodes: Node[] = useMemo(() => {
@@ -212,18 +221,18 @@ export default function AgentCanvas({ agents, broker, activeParticles, onKill, o
       label: e.label,
       animated: activeEdgeIds.has(e.id),
       style: {
-        stroke: activeEdgeIds.has(e.id) ? "#3b82f6" : "#334155",
+        stroke: activeEdgeIds.has(e.id) ? "#2563eb" : "#bfdbfe",
         strokeWidth: activeEdgeIds.has(e.id) ? 2.5 : 1.5,
       },
-      labelStyle: { fontSize: 9, fill: "#64748b" },
-      labelBgStyle: { fill: "#1e293b", fillOpacity: 0.8 },
+      labelStyle:   { fontSize: 9, fill: "#64748b" },
+      labelBgStyle: { fill: "#eff6ff", fillOpacity: 0.9 },
     })),
   [activeEdgeIds]);
 
   const onNodeClick = useCallback(() => {}, []);
 
   return (
-    <div className="w-full h-full rounded-xl overflow-hidden border border-slate-700/50">
+    <div className="w-full h-full rounded-xl overflow-hidden border border-blue-100 shadow-sm">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -233,7 +242,7 @@ export default function AgentCanvas({ agents, broker, activeParticles, onKill, o
         fitViewOptions={{ padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="#1e293b" gap={24} />
+        <Background color="#bfdbfe" gap={24} />
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>

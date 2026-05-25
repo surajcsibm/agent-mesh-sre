@@ -1,16 +1,27 @@
-// Route protection — requires a valid Google session for all pages
-// API routes are left unguarded so the MRAL runtime can self-call without tokens.
-// Static assets and the auth flow are always public.
+// Route protection — requires a valid Google session for all pages.
+// Uses withAuth for explicit token checking (works correctly on Vercel Edge).
 
-export { default } from "next-auth/middleware";
+import { withAuth } from "next-auth/middleware";
+
+export default withAuth({
+  callbacks: {
+    authorized({ token }) {
+      // !!token = logged in; null token = redirect to /login
+      return !!token;
+    },
+  },
+  pages: {
+    signIn: "/login",
+  },
+});
 
 export const config = {
   matcher: [
     /*
-     * Protect everything except:
-     *  - /api/auth/**        (NextAuth callbacks)
-     *  - /login              (sign-in page)
-     *  - /_next/**           (Next.js static files)
+     * Protect everything EXCEPT:
+     *  - /api/auth/**         (NextAuth callbacks)
+     *  - /login               (sign-in page itself)
+     *  - /_next/**            (Next.js internals)
      *  - /favicon.ico
      */
     "/((?!api/auth|login|_next/static|_next/image|favicon\\.ico).*)",
